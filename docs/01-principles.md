@@ -8,11 +8,11 @@
 
 ## P1 引擎不参与数值计算
 
-引擎的任何一行代码都不参与张量数值计算，所有计算发生在 KernelUnit 内。引擎只决定何时、在哪个 stream、用哪块内存、调用哪个入口。
+推理执行核心不参与张量数值计算，所有模型计算（含 Cast、量化与反量化）发生在 KernelUnit 内。按需启用的校验服务可以计算误差指标，但不能改变推理结果。引擎只决定何时、在哪个 stream、用哪块内存、调用哪个入口。
 
 理由是：一旦引擎拥有哪怕一个内建快速路径算子，就会出现针对特定 op 的分支，P2 随即失效。
 
-检查：`runtime/` 下不得引用 cutlass、cublas、cudnn；除 memcpy/memset 外不得有数值计算代码。CI 用 grep 白名单检查。
+检查：`runtime/` 下不得引用 cutlass、cublas、cudnn；除 memcpy/memset 和独立 conform 校验模块外，不得有模型数值计算代码。CI 用 grep 白名单检查。
 
 ---
 
@@ -20,7 +20,7 @@
 
 引擎理解数据流，不理解计算内容。它知道某个 slot 被哪个 node 写入、被哪个 node 读取，不知道这些 node 在算什么。
 
-检查：把 plan 中所有 `ku` 名称替换为随机字符串、所有 dtype 与 layout 标识替换为无意义编号后，全量测试必须零差异通过。这个检查是独立的 CI job。如果引擎在某处依赖了语义，测试会立刻失败。
+检查：一致重命名 `ku` 及其注册项、重映射不透明 layout 标签后，行为必须不变。dtype 保留已定义的编码和存储语义，用于大小计算与类型校验；未知 dtype 必须拒绝。
 
 ---
 
@@ -44,6 +44,8 @@ dtype、shape、stride、别名关系、读写集合、workspace 大小、对齐
 | S1 | 稳定 | 语义不变，允许向后兼容的扩展；破坏性变更需 major 版本和迁移工具 |
 | S2 | 实验性 | 可随时修改，需显式开关启用 |
 | S3 | 内部 | 不承诺 |
+
+当前处于原型期，文档中的 S0/S1 是发布后的目标等级，尚未生效；冻结条件见 03 文档第 0 节。
 
 等级的判定依据是 00 文档 0.4 节：如果该结构在未来两年内可能需要改字段而不只是加字段，就不能是 S0。
 
@@ -95,15 +97,13 @@ plan 的 node 划分、slot 分配、连线、内存偏移、stride 由确定性
 
 ---
 
-## P8 并发由 plan 显式声明
+## P8 执行依赖与调度分离
 
-plan 显式声明每个 node 所在的 stream 与额外的前置依赖（`after`）。引擎校验这些声明是否合法（无环、无未声明竞争），并把它翻译成 stream 与 event 操作。引擎不自行发现并行、不自行重排、不自行切流。
+plan 的 DAG 定义数据依赖与额外的 `after` 边；schedule 可指定合法的提交顺序与 stream 分配。没有 schedule 时使用确定性拓扑排序，就绪节点按 id 升序取出，默认全部提交到 stream 0。
 
-理由是：自动发现并发需要语义（哪些 op 可以重叠、是否共享资源、是否影响数值），且会让执行不可复现。而并发决策本身值得交给能看到全图和 profile 数据的 Kernel Harness 与 Agent。
+依赖调度不需要算子语义，前提是读写、别名和副作用声明完整。节点 id 仅用于标识和就绪集合的稳定选择，不能替代依赖关系。高级并发启发式可以以后增加，第一版不实现自动多流调度。
 
-唯一例外是 CUDA Graph 捕获，它不改变语义，只改变提交方式。
-
-检查：引擎中不得出现"为提升性能自动把 node 移到其他 stream"的启发式逻辑。若需要该能力，应实现为 Kernel Harness 的 plan 重写器，离线执行、可测试、可评审。
+检查：依赖环、悬空引用、缺失生产者必须拒绝；显式提交顺序必须覆盖全部节点且满足所有依赖。多流内存复用必须由完成关系证明安全，不能把 CPU 提交顺序当成设备完成顺序。
 
 ---
 
@@ -175,7 +175,7 @@ ref、fast、tuned 三个实现共享同一份 manifest、同一套参数 schema
 
 ## P15 需要语义的优化放在 Kernel Harness，不放运行时
 
-所有需要理解模型语义的优化——融合分组、布局传播与重排、全局 buffer 复用、算子选择、形状特化策略、量化 scale 传播——都在 Kernel Harness 完成。Kernel Harness 可以做完整的语义分析，可以任意复杂，可以依赖 PyTorch 与 ONNX。
+所有需要理解模型语义的优化——融合分组、布局传播与重排、算子选择、精度选择、量化策略与 scale 传播——都在 Kernel Harness 完成。基于已声明数据依赖的 buffer 复用和拓扑调度可由运行时实现；昂贵的搜索与调优优先离线。Kernel Harness 可以做完整的语义分析，可以任意复杂，可以依赖 PyTorch 与 ONNX。
 
 引擎只接收这些决策的结果（plan 中的 slot 布局、node 划分、内存偏移），并验证其合法性。
 
@@ -188,7 +188,8 @@ ref、fast、tuned 三个实现共享同一份 manifest、同一套参数 schema
 | buffer 全局复用 | 运行时 allocator | Kernel Harness 的显式内存计划 | 不需要 |
 | 算子选择 | 运行时 tactic 选择 | Kernel Harness 与 Agent | 不需要 |
 | 形状特化 | 运行时 JIT 或 tactic | Kernel Harness 的 variant | 不需要 |
-| 多流重叠 | 运行时自动 | plan 中显式声明 | 不需要 |
+| 多流重叠 | 运行时自动 | 初期由 schedule 显式声明 | 不需要 |
+| 精度转换方案 | 构建期或运行期策略 | Kernel Harness；转换计算由 KernelUnit 执行 | 策略需要语义 |
 
 也就是说，融合感知（fusion-aware）是 Kernel Harness 的属性，不是引擎的属性。把它放回引擎，等于把易变的东西放回稳定层，会退回 TVM 的路线。
 
@@ -230,7 +231,7 @@ KernelUnit ABI 必须能容纳厂商库（cuDNN、cuBLAS、CUTLASS 实例化产�
 | P5 | emit 模块禁止调用 LLM | import 图检查 |
 | P6 | ref 实现必填 | pack 校验 |
 | P7 | 结构化错误含 node_id | 故障注入测试集 |
-| P8 | plan 的 stream 与 after 字段 | 非法 plan 拒绝用例 |
+| P8 | DAG、确定性拓扑排序与可选 schedule | 环、悬空引用、非法 schedule 拒绝用例 |
 | P9 | requires 字段 | 跨 arch 加载用例 |
 | P10 | instrumentation 三档 | 基准脚本与开销上限断言 |
 | P11 | 校验规则集 | 规则覆盖率统计 |

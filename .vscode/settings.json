@@ -1,0 +1,9 @@
+{
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.configureOnOpen": true,
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build",
+    "--background-index"
+  ],
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

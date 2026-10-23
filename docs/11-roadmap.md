@@ -9,7 +9,7 @@
 | 阶段 | 周期 | 主要目标 |
 |---|---|---|
 | M-1 验证期 | 3 到 4 周 | 判断三个核心假设是否成立，决定是否开始 |
-| M0 接口与骨架 | 4 到 5 周 | 冻结 ABI，用 CPU 后端证明 plan 执行模型正确 |
+| M0 接口与骨架 | 4 到 5 周 | 验证 ABI 草案，用 CPU 后端证明 DAG 与 schedule 模型正确 |
 | M1 CUDA 与手写 | 6 到 8 周 | YOLOv8n 端到端跑通，全部 kernel 由人工编写 |
 | M2 Kernel Harness 与单点验证 | 6 周 | 用 Agent 替换三个难组，验证产出质量 |
 | M3 全量与产品化 | 6 到 8 周 | 全部由 Agent 产出，补指纹、签名、第二硬件 |
@@ -72,20 +72,20 @@
 
 ## 3 M0 接口与骨架（4 到 5 周）
 
-目标是把 ABI 冻结，并用 CPU 后端证明 plan 的执行模型是对的。
+目标是验证 ABI 草案，并用 CPU 后端证明 plan 的执行模型。首批已实现范围及下一步见 16 文档；此处其余交付物仍是计划。
 
 | 交付物 | 验收 |
 |---|---|
-| `include/loom/ku_abi.h` 与 `rt.h` | 通过一次外部评审，之后冻结 |
+| `include/loom/ku_abi.h` 与 `rt.h` 草案 | CPU 外部 KernelUnit 调用、生命周期与接口评审通过，暂不冻结 |
 | `plan/`：JSON 解析、`SymExpr` 求值、谓词、variant 选择 | 单元测试覆盖率 100%，这是纯逻辑 |
 | `mem/`：arena、liveness 分配、别名校验 | 对二十个手工构造的 plan 验证通过与拒绝 |
-| `exec/`：依赖图、提交、CPU 后端 | 多线程 CPU 后端跑通 |
+| `plan/` 与 `exec/`：依赖图、schedule、CPU 调用 | 单流、非 id 顺序依赖、分支汇合及非法图拒绝通过 |
 | `conform/`：L0 与 L1 | 能报出 node、slot、索引 |
 | `loom-cli run`、`validate`、`inspect` | 端到端可用 |
 | ABI 语料 CI | 至少一个包常驻，每次 CI 加载 |
 | 语义无关性测试 CI | plan 全部改名后行为不变 |
 
-M0 的门禁最严：`ku_abi.h` 冻结。冻结之后任何改动都需要决策记录和兼容性分析。
+M0 不因写完头文件而冻结 ABI。至少完成一个真实设备后端与外部编译产物接入、显式精度转换和异步生命周期验证后，再按 03 文档第 0 节评审冻结。
 
 先做 CPU 后端的原因是，它让你在没有 GPU 的 CI 上跑全部逻辑测试。GPU runner 昂贵且可获取性差，这个决定能把 CI 成本降低一个数量级。
 
@@ -99,7 +99,7 @@ M0 的门禁最严：`ku_abi.h` 冻结。冻结之后任何改动都需要决策
 |---|---|
 | CUDA 后端，含 arena、stream、event、graph、caps | 与 CPU 后端行为一致，使用同一批测试 |
 | 30 到 35 个手写 KernelUnit | 每个都有 ref 与 fast，都有 L1 golden |
-| Kernel Harness 的 `ingest`、`refrun`、`emit` 最小版本 | 能从 ONNX 产出可运行的 plan |
+| Kernel Harness 的 `ingest`、`precision`、`refrun`、`emit` 最小版本 | ONNX 到 plan，支持显式 FP32/FP16 方案与转换边界 |
 | profiler 与归因 | 能报出逐 node 耗时与瓶颈分类 |
 | 基准脚本与三方对照 | TensorRT、ONNX Runtime、本项目，固定协议 |
 
@@ -108,6 +108,7 @@ M0 的门禁最严：`ku_abi.h` 冻结。冻结之后任何改动都需要决策
 - 不慢于 ONNX Runtime CUDA fp16，即第一档。
 - mAP 下降不超过 0.3。
 - 引擎开销不超过 5%，即 `lm_kernel_time_fraction` 不低于 95%。
+- 验证外部编译的 KernelUnit、显式 Cast、累加精度契约和异步 buffer 生命周期后，才评审 ABI 冻结。
 
 必须先手写的原因：如果跳过这一步，M2 会同时变化两个未知数，任何失败都无法归因。手写版本是后续所有实验的对照组，也是 Agent 的样例来源。
 
@@ -220,8 +221,8 @@ Agent 预算按 token 计约每月 2000 到 8000 美元，GPU 机时另计。相
 | 阶段 | 门禁 | 不通过的动作 |
 |---|---|---|
 | M-1 | E1 通过，且 E2 中融合块不低于 70% | 改写架构，或降级为第 9 节的方案 |
-| M0 | ABI 冻结，语义无关性测试与语料 CI 通过 | 不冻结不许进入 M1 |
-| M1 | 不慢于 ONNX Runtime，mAP 达标，引擎开销不超过 5% | 回到 M0 修执行器 |
+| M0 | CPU 调用闭环、DAG/schedule 校验与实验语料通过 | 修正契约草案后再进入 M1 |
+| M1 | 性能与 mAP 达标，外部产物/精度/异步验证通过，评审 ABI 冻结 | 修正实现或继续保留实验性接口 |
 | M2 | 三分之二的难组达到 90%，失败率低于 60% | 归因后决定：改反馈、拆任务或换模型 |
 | M3 | 新硬件到包不超过三天，跨 arch 拒绝正确 | 补 Kernel Harness，不进入产品化 |
 | M4 | 第二模型不超过两周，复用率不低于 50% | 转第 9 节的方案 C |

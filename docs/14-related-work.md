@@ -28,7 +28,7 @@
 
 第二，reward hacking 已经发生过真实事故。Sakana 的案例说明，如果验收只看"跑通且变快"，Agent 会复制参照实现、硬编码测试值或跳过计算。
 
-由此产生的设计后果是：容差必须由 fp64 golden 标定而不是人为给定（09 文档第 5.2 节），并加入 Agent 看不到的检查维度（09 文档第 5.3 节）。
+由此产生的设计后果是：数值契约与比较规则应由应用方预算和独立验证流程确定（09 文档第 5.2 节），并加入 Agent 看不到的留出样本（09 文档第 5.3 节）。
 
 第三，多轮 refine 加固定预算明显优于单轮。Kevin 的 16 路乘以 8 轮串行优于 128 路单轮。
 
@@ -181,3 +181,14 @@ IREE 的 `hal.executable.export` 在编译期固定了 workgroup size 与 count�
 - CUDA Graph 指南 — https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html
 - 动态参数 — https://developer.nvidia.com/blog/constructing-cuda-graphs-with-dynamic-parameters/
 - 条件节点 — https://developer.nvidia.com/blog/dynamic-control-flow-in-cuda-graphs-with-conditional-nodes/
+
+
+## 7 图交换格式与执行产物的边界
+
+ONNX IR 定义模型图、节点、张量和算子版本，适合作为离线模型输入。[ONNX IR 规范](https://onnx.ai/onnx/repo-docs/IR.html)
+
+StableHLO 是框架与编译器之间的高层运算接口，包含明确语义、序列化和兼容性设计，适合需要接入相应生态的前端。[StableHLO](https://openxla.org/stablehlo)
+
+IREE 的 VMFB 是其 VM 程序模块的序列化形式，依赖该运行时的模块和调用约定。[IREE VM](https://iree.dev/developers/design-docs/vm/)
+
+据此，本项目将模型交换与执行格式分层：优先在 Kernel Harness 导入 ONNX，必要时增加其他适配器；runtime 使用描述 KernelUnit 调用的 Loom plan。这些来源没有提供一个可直接替代 Loom 的、跨工具链通用的任意预编译 kernel DAG ABI。自定义的是较小的执行契约，而非重新定义模型算子体系。

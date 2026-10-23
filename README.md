@@ -8,7 +8,7 @@ Loom 意为织机：经线是固定的接口与编排，纬线是 Agent 产出�
 
 AI Compiler 想做的是把模型图翻译成可执行的程序，难点在于语义鸿沟：图里只有"做什么"，没有"怎么做"。Agent 接手这件事之后，引擎剩下的是运行时与正确性保证，这也是变化最慢、最值得长期投入的部分。
 
-本项目的引擎不做图编译优化、不做算子融合、不做算子生成。它定义接口、负责执行编排与校验。kernel 由 Agent 在离线的 Kernel Harness 中产出，按冻结的 C ABI 接入。
+本项目的引擎不做图编译优化、不做算子融合、不做算子生成。它定义接口、负责执行编排与校验。kernel 由 Agent 在离线的 Kernel Harness 中产出，按版本化的 C ABI 接入（当前为未冻结草案）。
 
 Kernel Harness 指用 Agent 编写 kernel 的那套系统：把模型转成 plan，驱动 Agent 产出 KernelUnit，跑校验与调优，最后打包。它需要理解模型语义，因此被放在运行时之外。
 
@@ -38,11 +38,11 @@ Kernel Harness 指用 Agent 编写 kernel 的那套系统：把模型转成 plan
 | 2 | KernelUnit 等于一个 `.so` 加一个入口符号 | 失败隔离、arch 分离、可签名 |
 | 3 | ABI 只承认缓冲区、参数、workspace 和 stream | 这是十几年没有变化的抽象层次 |
 | 4 | grid 与 block 由 KernelUnit 的 launcher 在调用时计算 | 符号化 kernel 才可能，形状组合才不会爆炸 |
-| 5 | plan 显式编排，数据依赖由引擎自动推导 | 执行确定，且 Agent 写不出竞争条件 |
+| 5 | plan 分离执行 DAG 与 schedule，依赖由声明推导 | 默认确定性拓扑排序，显式 schedule 必须满足依赖 |
 | 6 | 结构由确定性程序生成，只有 kernel 实现交给 Agent | LLM 只应做有客观判据的工作 |
 | 7 | 厂商库是 KernelUnit 的一等公民 | 不在 cuDNN 最强的领域硬拼 |
 | 8 | 每个 KernelUnit 必须有 ref 实现与降级路径 | 始终可运行，且 ref 是校验的 oracle |
-| 9 | 容差由 fp64 golden 标定，Agent 不可见 | 堵死针对验收标准的取巧 |
+| 9 | 数值契约、误差预算与任务指标由应用方和离线验证工具确定 | 分开验证实现正确性与模型质量，隐藏测试降低过拟合风险 |
 | 10 | 硬件特化必须声明，并在加载时检查 | 否则会在 A100 上执行 H100 生成的代码 |
 
 ---
@@ -55,11 +55,11 @@ docs/
 ├── 01-principles.md      16 条设计原则，每条含内容、理由与检查方式
 ├── 02-architecture.md    模块划分、依赖方向、线程模型、C ABI
 ├── 03-contracts.md       稳定性分级：哪些是 S0，怎么版本化
-├── 04-abi.md             KernelUnit ABI（S0 冻结）与 manifest 规范
+├── 04-abi.md             KernelUnit ABI 草案（目标 S0）与 manifest 规范
 ├── 05-plan.md            plan 格式、SymExpr 语义、variant、内存计划
 ├── 06-package.md         包格式、指纹、溯源与签名、registry、厂商 KernelUnit
 ├── 07-agent-protocol.md  Agent 角色、产物约定、闭环、修复建议、预算
-├── 08-kernel-harness.md  Kernel Harness：ingest、refrun、partition、layout、emit、gen
+├── 08-kernel-harness.md  Kernel Harness：ingest、precision、refrun、partition、layout、emit、gen
 ├── 09-runtime-services.md 运行时服务：内存、并发、动态形状、校验、归因、降级
 ├── 10-yolo.md            YOLOv8n 落地方案与验收协议
 ├── 11-roadmap.md         计划：验证期与 M0 到 M5，每个阶段有门禁
@@ -67,7 +67,8 @@ docs/
 ├── 13-glossary.md        术语表
 ├── 14-related-work.md    相关工作、真实水位、本项目的差异
 ├── 15-open-questions.md  待讨论的问题与待定的技术决策
-└── decisions/            8 份架构决策记录，记录关键选择的背景与理由
+├── 16-implementation.md 实现语言、原型范围、构建与下一步
+└── decisions/            架构决策记录，记录关键选择的背景与理由
 ```
 
 其中 03、04、05 三篇定义接口与格式，实现前需要通读。
@@ -94,7 +95,7 @@ docs/
 
 ## 现在的状态
 
-蓝本已完成，尚未开始实现。
+设计仍在验证中，ABI 与 plan 尚未冻结。已开始 C++17 原型：执行 DAG 校验、确定性调度、静态 tensor 描述和入口契约匹配；尚未实现 kernel 加载和推理执行。构建方式与支持范围见 [16 实现起点](docs/16-implementation.md)。
 
 下一步是 11 文档中的验证期，约三到四周，先弄清这条路在哪里走不通，再决定是否投入半年：
 

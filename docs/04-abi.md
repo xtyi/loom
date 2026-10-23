@@ -1,4 +1,6 @@
-# 04 KernelUnit ABI 规范（v1.0，S0 冻结）
+# 04 KernelUnit ABI 规范（v1.0 草案，目标 S0）
+
+本章为设计草案，尚未对应发布头文件。冻结条件见 03 文档第 0 节。当前 `runtime/plan/entry.h` 仅实现内部入口元数据及静态绑定检查，不是下面的可调用 C ABI；已实现范围见 16 文档。
 
 这份头文件是引擎与外部 kernel 之间唯一的硬边界。
 
@@ -46,7 +48,7 @@ variant            plan 层面选择的 impl 组合，见 05 文档第 5 节。
 ## 3 头文件
 
 ```c
-/* loom/ku_abi.h  —  STABILITY: S0 (frozen) */
+/* loom/ku_abi.h  —  STABILITY: draft (target S0 after validation) */
 #ifndef LOOM_KU_ABI_H
 #define LOOM_KU_ABI_H
 
@@ -106,7 +108,7 @@ typedef struct LmBuffer {
   uint8_t   rank;          /* 0..8，0 表示标量 */
   uint8_t   mem_space;     /* LmMemSpace */
   uint16_t  flags;         /* 位标志，见下 */
-  uint32_t  layout_id;     /* 不透明布局标签，0 表示引擎不关心，见 4.6 */
+  uint32_t  layout_id;     /* 不透明布局标签，0 表示默认标签，非通配符，见 4.6 */
   uint32_t  _rsvd0;
   int64_t   dims[LM_MAX_DIMS];     /* 逻辑维度（元素数） */
   int64_t   strides[LM_MAX_DIMS];  /* 元素为单位；0 表示该维广播 */
@@ -207,7 +209,7 @@ const LmKuCaps*   lm_ku_caps_v1(void);
 | `layout_id` | 不透明整数，引擎只搬运不解释 | 若只支持某种 layout，在 manifest 声明 `required_layout`，不匹配时返回错误 |
 | `mem_space` | 与实际分配一致 | 不要假设 device 内存可读 |
 
-非连续张量是常态而不是例外。融合 kernel 的输入经常是上游输出的切片或转置视图。任何假设连续的实现，必须在 manifest 中声明 `requires_contiguous: true`，由引擎在调用前校验，必要时插入拷贝。
+非连续张量是常态而不是例外。融合 kernel 的输入经常是上游输出的切片或转置视图。任何假设连续的实现，必须在 manifest 中声明 `requires_contiguous: true`，由引擎在调用前校验，不匹配则拒绝，要求外部生成显式转换节点。
 
 ### 4.2 `LmKernelArgs`
 
@@ -240,14 +242,14 @@ const LmKuCaps*   lm_ku_caps_v1(void);
 `layout_id` 不是给引擎用的，是给 kernel 用的：
 
 ```
-0        无关，kernel 用 strides 自行导航
+0        默认布局标签，非通配符；存储寻址仍由 strides 描述
 1        NCHW
 2        NHWC
 3        blocked-32
 >= 1024  自定义，必须在 manifest 中给出 layout 描述
 ```
 
-引擎只做一件事：把 plan 中声明的 layout_id 原样放进 buffer 结构，它不知道 NHWC 是什么。
+引擎比较入口要求与 slot 的 layout_id，并原样传给 kernel，不解释 NHWC 等标签的数学含义。当前原型要求标签精确相同，包括 0；若未来增加任意布局约束，需显式表达，不能复用 0 暗示。
 
 布局知识属于 kernel 和 plan，属于生产者，不属于引擎。
 
@@ -469,6 +471,14 @@ workspace 是 kernel 需要的临时显存，由引擎从共享 scratch arena �
 
 ---
 
+## 11.1 数值契约与类型检查
+
+buffer dtype 仅描述存储类型，不完整描述计算精度。manifest 应携带版本化的数值契约标识，记录必要的输入/输出 dtype、计算与累加类型、舍入/饱和规则、允许的近似，以及验证报告。融合单元内部存在多种精度时，允许使用分阶段描述，不能用一个全局 `compute_dtype` 掩盖差异；具体 schema 在原型验证后确定。
+
+引擎校验 slot 与入口要求是否匹配、选中的实现是否满足要求的契约；它不能仅凭声明证明二进制遵守数值约定。核验由独立参考实现和离线测试承担。同一 KernelUnit 的可替换实现必须满足同一外部契约，不能把 FP16 buffer 当 FP32 传入，或通过隐式 Cast 实现降级。
+
+量化契约还需表达 scale、zero point、轴/分组及参数绑定（如适用）；动态 scale 可由普通 KernelUnit 在运行期产生。Cast、Quantize、Dequantize 可作为独立 KernelUnit，也可在明确声明边界的融合单元内部执行。精度策略由 Kernel Harness 制定。
+
 ## 12 manifest（`ku.json`）
 
 ```json
@@ -511,7 +521,7 @@ workspace 是 kernel 需要的临时显存，由引擎从共享 scratch arena �
 | `io.fast` 与 `io.ref` 分别声明 | ref 可以更宽松，fast 可以更严格 | S1 |
 | `implementations[].min_arch` | 指纹检查 | S1 |
 | `implementations[].params` | 该实现的默认调优参数，可被 plan 的 variant 覆盖 | S1 |
-| `caps.requires_contiguous` | 引擎可在调用前插入连续化拷贝 | S1 |
+| `caps.requires_contiguous` | 不匹配时拒绝，外部可生成显式连续化节点 | S1 |
 | `meta.fused_from` | 仅供人工审计，引擎忽略 | S2 |
 | `meta.provenance` | 溯源 | S1 |
 

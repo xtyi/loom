@@ -26,19 +26,20 @@ Kernel Harness 是用 Agent 编写 kernel 的那套离线系统：把模型转�
 ## 2 流水线与产物
 
 ```
-  模型文件（ONNX 或 TorchScript）
+  模型文件（第一版优先 ONNX）
        │  ingest
        ▼
   SemanticGraph ────────────────┐  Kernel Harness 内部 IR，含算子语义
-       │  refrun                │  引擎看不到它
+       │  precision + refrun    │  引擎看不到它
        ▼                        │
-  goldens（fp64，逐 node）      │
+  数值方案与基线参考            │
        │  partition ◄───────────┤  Agent：融合分组建议
        ▼                        │
   FusionDecision                │
        │  layout                │
        ▼                        │
   LayoutDecision                │
+       │  按最终融合/数值边界刷新参考
        │  emit ◄────────────────┘  确定性合成器，唯一产出 plan 的地方
        ▼
   plans/*.json 与 mem/*.json
@@ -91,33 +92,25 @@ class TensorSpec:
 
 ---
 
-## 4 参照执行与 golden 捕获
+## 4 精度规划与参照执行
 
-这是整个项目的真值来源。要点如下。
+### 4.1 PrecisionDecision
 
-在 fp64 下执行参照模型。fp16 的参照不是正确的真值，原因见 09 文档第 5.2 节。
+Kernel Harness 决定计算方案，runtime 执行已经决定的方案。第一版从模型原有 dtype 起步，允许显式指定 FP32/FP16 混合方案；BF16、自动混合精度搜索和 INT8/FP8 校准按需求追加。
 
-逐 node 捕获，不只是最终输出，否则无法定位问题。
+构建产物 `PrecisionDecision` 应包含：图中值的存储类型、各 KernelUnit 的数值契约、转换边界、模型 I/O 类型、必要的量化参数绑定，以及应用方给出的质量预算。存储 dtype 与内部计算/累加类型分开记录。融合、布局和精度会相互影响，可以迭代，最终 plan 必须重新验证。
 
-参照实现必须独立，用 PyTorch eager 或 ONNX Runtime，不能是"自己再写一遍"，否则会共模错误。
+固定权重转换优先离线；Cast、Quantize、Dequantize 和动态 scale 计算可成为普通节点，或被融合到声明了相应数值契约的实现里。不能由 runtime 因为看到某个 op 名称而隐式改变精度。量化不仅是换 dtype，还需 scale、zero point、轴/分组和舍入/饱和规则（按方案适用）。
 
-fp64 的代价可以接受：YOLOv8n 在 fp64 下约慢三倍、显存约两倍，这是一次性的离线任务。
+可以复用外部转换与校准工具，先验证转换后的图，再生成 KernelUnit。现有方案示例见 [ONNX Runtime 浮点转换](https://onnxruntime.ai/docs/performance/model-optimizations/float16.html) 与 [量化说明](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html)。
 
-```python
-# 伪代码
-with torch.no_grad():
-    model = load_onnx(model_path).double()      # fp64
-    for name, t in model.graph.intermediates:   # 用 hook 或改写图
-        capture(name, t.detach().cpu().numpy())
-```
+### 4.2 两套参考用途
 
-存储策略上，把所有中间 tensor 按 fp64 全量存下来太重（YOLO 约 400 MB）。做法是：
+原始模型基线用于模型质量评估；符合部署数值契约的独立参考用于 kernel 正确性检查。记录两者的版本、输入、权重和数值设置，避免共模错误。FP64 仅在适用时用于数值分析，不是强制的通用 oracle；详细规则见 09 文档第 5.2 节。
 
-- 只对 coverage 的每个 case 存"每 node 输出"，用 fp32 存储，因为 fp64 存盘的差异在 1e-7 量级，没有意义。
-- 校验时比较 `fast_fp16` 与 `golden_fp32`，容差按 09 文档第 5.2 节标定。
-- 中间节点的 golden 只在需要时生成，默认存到融合组边界，也就是 plan 中每个 node 的输入输出。
+按最终融合边界捕获参考输入输出；局部差分使用相同输入隔离 kernel 错误，完整 plan 的端到端检查单独衡量累积误差。参考数据按其真实 dtype 保存，转换存储精度需明确记录并验证。中间结果可按需生成，不要求把所有节点的 FP64 数据全量存盘。
 
-最后一条是合理的：校验粒度应当等于 plan 的 node 粒度，而不是原始图的 op 粒度。这样既省空间，也让校验结果直接对应到 Agent 要修的东西。
+留出数据与发布任务指标由独立验证流程管理，Agent 不得更改。在线默认不加载 golden，按需校验时才使用。
 
 ---
 
@@ -198,8 +191,8 @@ def propagate_layout(graph, anchors):
 
 ```
 输入：
-  SemanticGraph，已应用 FusionDecision 与 LayoutDecision
-  goldens 的元数据，提供形状
+  SemanticGraph，已应用 PrecisionDecision、FusionDecision 与 LayoutDecision
+  已验证的形状/类型约束；golden 只覆盖样本，不能替代动态 shape 约束
   各组的 kernel manifest，提供 io 声明
   shape 的符号映射策略
 
@@ -244,7 +237,7 @@ def propagate_layout(graph, anchors):
    按 manifest.params 的 schema，从 FusionDecision 与调优结果取值。
 
 7. 生成内存计划，explicit 模式
-   计算 liveness，做全局分配，可以用 best-fit 或颜色分配，
+   先确定合法 schedule，再依据完成关系计算存活性，做全局分配，可以用 best-fit 或颜色分配，
    比引擎的 first-fit 更好。
    不变量 T4：结果必须通过引擎的验证规则，在 emit 内部先跑一遍。
 ```
@@ -308,7 +301,7 @@ work/groups/g17/
 - build.sh 的编译选项，-O 与 -arch 相关除外
 
 ## 验收标准
-1. check.sh --level L1 全部通过，容差已标定，见 cases/*/tol.json
+1. check.sh --level L1 全部通过，比较规则由独立验证流程确定，Agent 不得修改
 2. check.sh --level L2 通过，形状扫描
 3. bench.sh 报告的耗时不超过给定阈值
 4. workspace 不超过 100 KB

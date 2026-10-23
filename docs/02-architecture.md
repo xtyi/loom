@@ -1,6 +1,6 @@
 # 02 软件架构设计
 
-本文描述系统的模块划分、依赖方向和运行模型。
+本文描述目标系统的模块划分、依赖方向和运行模型；当前已实现的子集见 16 文档。以下性能数字是待验证的设计估计，不是当前原型的测量结果。
 
 架构的目标是让 00 文档 0.5 节的边界（引擎不依赖模型语义）在代码结构上可以被检查，而不是靠开发者自觉。
 
@@ -18,11 +18,11 @@
 
 KernelUnit 层是编译好的 `.so`，每个暴露一个 `lm_ku_entry_v1` 入口。它内部可以调用 CUDA、Triton 或 TileLang 的编译产物，也可以只是对 cuDNN 的薄包装。运行时不知道里面是什么。
 
-另有一条离线链路，不与运行时共享代码：Kernel Harness（`loom-harness`，Python）把模型转成 plan，驱动 Agent 产出 KernelUnit，跑校验和调优，最后打包成 `.loom`。Agent 是外部模型，只通过结构化产物与 Kernel Harness 交互。
+另有一条离线链路，通过公开接口复用运行时能力：Kernel Harness（`loom-harness`，Python）把模型转成 plan，驱动 Agent 产出 KernelUnit，跑校验和调优，最后打包成 `.loom`。Agent 是外部模型，只通过结构化产物与 Kernel Harness 交互。
 
-运行时与 Kernel Harness 之间没有代码依赖。Kernel Harness 通过调用 `loom-cli` 使用引擎能力，不链接引擎内部；引擎也不引用 Kernel Harness 的任何代码。两者只有两个耦合点：`.loom` 包格式和 `.so` 的 ABI。部署时应用拿到的就是 `.loom`，运行时读取它、加载其中的 `.so`、按 plan 执行。
+依赖单向：Kernel Harness 可通过 `loom-cli` 或可选 Python 绑定调用公开 runtime API，不访问内部模块；runtime 不依赖 Harness、Python 或绑定库。两者通过包格式、KernelUnit ABI 和公开宿主 API 交互。部署时应用拿到的就是 `.loom`，运行时读取它、加载其中的 `.so`、按 plan 执行。
 
-这张结构里没有编译器，没有图优化的 pass，也没有算子生成器。它们是刻意不存在的。
+runtime 内没有模型编译器或算子生成器。离线工具链承担语义转换、精度规划、kernel 编译与打包。
 
 ---
 
@@ -48,8 +48,8 @@ KernelUnit 层是编译好的 `.so`，每个暴露一个 `lm_ku_entry_v1` 入口
 |---|---|---|---|
 | `api/` | C ABI 实现、参数校验、错误翻译 | 其它全部 | 业务逻辑 |
 | `package/` | 解包、manifest 校验、签名与溯源、指纹比对 | `plan`、`util` | 执行 kernel |
-| `plan/` | JSON 解析、`SymExpr` 求值、谓词求值、variant 选择、静态校验 | `util` | 访问设备 |
-| `exec/` | 依赖图构建、事件插入、提交、graph 捕获与重放 | `plan`、`mem`、`loader` | 解释算子含义 |
+| `plan/` | JSON 解析、`SymExpr` 求值、谓词求值、variant 选择、DAG/schedule 静态校验 | `util` | 访问设备 |
+| `exec/` | 使用已校验依赖与 schedule，事件插入、提交、graph 捕获与重放 | `plan`、`mem`、`loader` | 解释算子含义 |
 | `mem/` | arena、liveness 分配、别名校验、对齐、canary | `util` | 分配单个 tensor |
 | `loader/` | `dlopen`、符号绑定、caps 协商、sha256 校验 | `util` | 生成 launcher |
 | `backends/` | 设备操作抽象（分配、拷贝、stream、event、graph、caps） | `util` | 把 CUDA 类型泄漏到上层 |
@@ -95,8 +95,9 @@ public:
 
 | 模块 | 职责 | 需要语义 | 可调用 LLM |
 |---|---|---|---|
-| `ingest/` | ONNX 或 TorchScript 转成 `SemanticGraph` | 是 | 否 |
-| `refrun/` | 用 PyTorch 或 ONNX Runtime 跑出逐 node golden | 是 | 否 |
+| `ingest/` | 第一版 ONNX 转成 `SemanticGraph`，其他来源按需适配 | 是 | 否 |
+| `precision/` | 精度方案、转换边界、量化参数和质量预算 | 是 | 否，首版使用显式策略 |
+| `refrun/` | 原始模型基线及符合目标数值契约的独立参考 | 是 | 否 |
 | `partition/` | 融合分组决策 | 是 | 可以，结果经结构校验 |
 | `layout/` | 布局传播与重排决策 | 是 | 否 |
 | `mem/` | 显式内存计划 | 是 | 否 |
@@ -162,24 +163,24 @@ struct InflightSlot {
 
 ## 5 一次 run 的执行流程
 
-一次 `lm_session_run` 分成八步，前三步是同步的，第四步之后是异步的。
+一次 `lm_session_run` 分成八步：前五步为主机侧准备，第六步提交设备工作，第七步返回异步句柄，第八步由调用方等待完成。
 
 1. 绑定符号。`api` 从输入 tensor 的 `dims` 推出 `N`、`H`、`W` 等符号值，绑定关系由 plan 的 `symbols` 声明。
 2. 域检查。`plan` 校验 `domain` 中的谓词，不满足则返回 `LM_E_SHAPE` 并指出失败的谓词。
 3. 选择 variant。`plan` 按当前符号值和硬件条件选出 impl 集合与内存计划。
-4. 计算或校验内存。`mem` 在 auto 模式下计算偏移，在 explicit 模式下验证；同一 `(variant, 符号值)` 组合直接复用缓存。
-5. 构建依赖图。`exec` 按 slot 读写推出 happens-before 关系，并为跨 stream 的依赖插入 event。
-6. 提交。graph 命中时执行一次重放；否则按 node id 升序逐个调用 `lm_ku_entry_v1`。
+4. 构建依赖图并确定 schedule。合并数据边与 `after`，检查无环；使用确定性拓扑顺序或验证外部提交顺序。
+5. 计算或校验内存。依据 schedule 和完成关系计算/验证偏移，再准备必要的同步。缓存身份必须包含图、实现、schedule、内存计划及形状。
+6. 提交。graph 命中时执行重放；否则按已验证的 schedule 逐个调用 KernelUnit。
 7. 返回句柄。此时 GPU 可能仍在执行，`lm_session_run` 默认不阻塞。
 8. 等待与返回。`lm_run_wait` 阻塞在该槽位的完成事件上，返回耗时与是否降级。
 
-前三步加上第四步合计在微秒级，第六步是纳秒级的循环，执行本身在毫秒级。把这三段分开，是延迟优化的全部空间。
+准备、提交和设备执行应分别测量；依赖构建与内存规划的缓存收益、单次提交开销需要在后端实现后验证。
 
 ---
 
 ## 6 对外接口
 
-以下为 C ABI 节选，完整定义见 `include/loom/rt.h`。
+以下为 C ABI 设计草案，尚未实现；未来落在 `include/loom/rt.h`。当前原型接口是内部 C++ API，不承诺二进制兼容。
 
 ```c
 typedef struct LmPackage LmPackage;
@@ -273,7 +274,7 @@ D2 Graph 缓存的 key。 key 由四部分组成：`variant_id`、绑定的符�
 
 D3 事件插入策略。 只对跨 stream 的依赖插入 event，同 stream 内的顺序由提交顺序保证。event 对象池化复用，避免每次 `cudaEventCreate`。
 
-D4 liveness 分配结果要缓存。 形状绑定后计算一次偏移表，耗时约 20 μs。同一 `(variant_id, 符号值)` 组合必须复用，key 与 D2 相同。
+D4 liveness 分配结果要缓存。 在依赖/schedule 校验后计算偏移表；key 包含图/实现、schedule（含 stream 分配）、内存计划和形状，不能仅用 variant id 与 shape。开销需要实测。
 
 D5 校验模块编译进运行时，但不在正常路径上执行。 它只在调用 `lm_validate` 时激活，会增加约 80 KB 体积，好处是线上也能做现场诊断。`prod` 档位下不加载 golden 数据，以节省内存。
 
@@ -297,7 +298,7 @@ loom/
 │       └── corpus/              # ABI 兼容性测试包，只增不减
 ├── cli/                         # loom-cli：run/validate/pack/inspect/bench
 ├── harness/                     # Kernel Harness（Python）
-│   ├── loom_harness/{ingest,refrun,partition,layout,mem,emit,gen,check,tune,pack,registry}/
+│   ├── loom_harness/{ingest,precision,refrun,partition,layout,mem,emit,gen,check,tune,pack,registry}/
 │   ├── prompts/                 # Agent prompt，S3
 │   └── templates/               # kernel 脚手架与 shim 模板
 ├── examples/yolov8n/            # 端到端示例
@@ -318,11 +319,13 @@ loom/
 | 0001 | 不做图编译与算子生成 | 范围裁剪的依据 |
 | 0002 | KernelUnit 为契约原子，一个实现一个 `.so` | 失败隔离与 arch 分离 |
 | 0003 | C ABI 加 `dlopen`，不做源码级 JIT | 运行时不含编译器 |
-| 0004 | plan 显式编排，引擎不改写语义 | 确定性与可归因 |
+| 0004 | 执行 DAG 与 schedule 分离，引擎不改写模型语义 | 依赖正确性与确定性 |
 | 0005 | 结构由程序生成，kernel 由 Agent 生成 | 限制 LLM 的作用范围 |
 | 0006 | 每个 in-flight 槽位独立 arena | 无锁、偏移确定 |
 | 0007 | 厂商库作为一等 KernelUnit | 不在厂商最强的领域硬拼 |
 | 0008 | grid 与 block 由 KernelUnit 的 launcher 计算 | 符号化 kernel 的前提 |
+| 0009 | 精度决策离线，runtime 执行数值契约 | 正确性与模型质量分别验证 |
+| 0010 | C++17 核心、C ABI、可选 Python 绑定 | 语言与依赖边界 |
 
 ---
 
