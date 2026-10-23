@@ -1,13 +1,13 @@
 # 16 实现起点
 
-当前是验证执行契约的原型，不是完整推理引擎。设计文档中的 package、ABI、后端、校验服务等多数仍未实现。S0/S1 是未来发布目标，不能据此依赖当前内部类型的布局。
+当前是验证执行契约的原型，已跑通实验 C ABI 与 CPU 动态库的同步执行，不是完整推理引擎。设计文档中的 package、目标 S0 ABI、设备后端、校验服务等多数仍未实现。S0/S1 是未来发布目标，不能据此依赖当前内部类型的布局。
 
 ## 1 语言与模块
 
 | 部分 | 选择 | 理由 |
 |---|---|---|
 | runtime / CLI | C++17 | 资源生命周期、设备接口、厂商库生态与本地调用 |
-| 宿主与 KernelUnit 边界 | C ABI，后续实现 | 隔离 C++ 编译器与对象布局；版本化接口 |
+| 宿主与 KernelUnit 边界 | 实验 C ABI，CPU 同步子集 | 隔离 C++ 对象布局；版本与能力检查；尚未冻结 |
 | 构建与基础测试 | CMake / CTest | 无 GPU、无网络依赖即可运行 |
 | 离线构建与验证 | Python，后续实现 | 模型生态、Agent 驱动、数据与实验流程 |
 | Python 绑定 | 可选 pybind11，后续实现 | 包装宿主 API，核心不依赖解释器 |
@@ -16,13 +16,15 @@
 
 ## 2 当前代码
 
-所有接口为内部 S3 C++ 类型，不是已发布的 C ABI 或 JSON schema。各层独立验证：
+plan 与宿主接口为内部 S3 C++ 类型，KernelUnit 使用单独的实验 S2 C ABI；均不是已发布的稳定 ABI 或 JSON schema。各层独立验证：
 
 | 入口 | 作用 | 成功结果 |
 |---|---|---|
 | `prepare(graph, order)`，`plan/graph.h` | 只检查拓扑与 schedule，忽略 tensor/入口元数据 | 确定性提交顺序 |
 | `validate_tensor(desc)`，`plan/tensor.h` | 检查静态存储描述和尺寸溢出 | 规范化 descriptor、元素数与存储跨度 |
 | `prepare_program(graph, entries, order)`，`plan/program.h` | 拓扑、全部 tensor、入口注册表与每个端口绑定 | 拥有自身数据的 PreparedProgram 快照 |
+| `cpu::Session(graph, entries, libraries, constants, order)` | 重新 prepare、加载使用到的动态库、匹配二进制 caps、复制常量 | 拥有 metadata、常量与动态库句柄的 Session |
+| `session.run(inputs)` | 输入容量/对齐/重叠检查，分配 buffer/workspace，按顺序同步调用 | 拥有输出存储的 RunResult |
 
 Slot 使用独立 id；外部 slot 已初始化且只读，其余 slot 恰有一个生产者。图级 `inputs` 明确每次调用传入的 slot 及其顺序：引用必须存在、不重复且为 external；不列入 inputs 的 external slot 可由加载阶段提供，如权重/常量。允许空输入列表、未消费的输入，以及输入直接作为图输出；不从 external 自动推断调用接口。节点按 `(kernel, implementation)` 绑定注册表里的 EntryContract。先建立 producer → consumer 与 `after` 边，再用最小就绪 id 拓扑排序；显式顺序必须覆盖全部节点且满足依赖。
 
@@ -65,7 +67,7 @@ const auto result = loom::plan::prepare(graph);
 | `layout` | 不透明整数，精确匹配；0 是默认标签，不是通配符，不推导 NCHW/NHWC 语义 |
 | `alignment` | 保证的基址字节对齐，非零 2 的幂；默认 1，不隐式推导自然对齐 |
 
-dtype 被识别只表示知道存储宽度，不表示已实现该类型的算术 kernel。描述中不含 data 指针；真实分配长度、地址对齐、设备、对象寿命和跨 slot 物理重叠仍需在调用/分配阶段检查。
+dtype 被识别只表示知道存储宽度，不表示已实现该类型的算术 kernel。描述中不含 data 指针；CPU Session 在调用/分配阶段检查声明容量、地址对齐、跨输入 slot 的存储跨度重叠，并管理输出寿命。调用方仍须提供真实有效的主机内存及容量；设备指针不属于该接口。
 
 非空 tensor 的 `span_bytes = (1 + sum((dim-1)*stride)) * element_bytes`，包含中间 padding，不包含尾部对齐补齐。标量占一个元素。计算使用检查过的乘法/加法，要求元素数、stride、存储跨度不超过 `min(SIZE_MAX, INT64_MAX)`；不分配该大小的内存。
 
@@ -77,11 +79,11 @@ dtype 被识别只表示知道存储宽度，不表示已实现该类型的算�
 
 `plan/entry.h` 定义入口元数据：
 
-- `(kernel, implementation)` 是唯一注册键，`symbol` 是未来需要加载的符号名；目前仅检查名称非空且无 NUL，不解析库、不查找函数。
+- `(kernel, implementation)` 是唯一注册键，`symbol` 是需要加载的符号名；prepare 阶段仅检查名称非空且无 NUL，不解析库、不查找函数。CPU Session 随后按这个符号解析真实入口。
 - `inputs`/`outputs` 是有序端口；输入只读、输出只写。每个方向内端口名称唯一，端口采用静态 TensorDesc。
 - `numerical_contract` 是必要的、不透明的版本/内容 ID；节点必须明确要求同一 ID。它用于区分相同存储 dtype 下的不同累加/舍入方案，不证明二进制实际符合这些行为。
 - `params_bytes` 要求节点提供恰好相同大小的参数块；内容不透明，尚不检查参数内部 schema。
-- `workspace_bytes` 和 `workspace_alignment` 是固定资源要求；检查尺寸与对齐合法性，随后保存在调用快照中。还没有分配或检查实际 workspace。
+- `workspace_bytes` 和 `workspace_alignment` 是固定资源要求；prepare 检查尺寸与对齐合法性，随后保存在调用快照中。CPU Session 每次 run 分配满足所有调用要求的共享 scratch，串行复用。
 
 注册表中的所有入口均校验，包括未使用项。每个调用按位置逐端口比较 dtype、完整 shape、规范化 stride 和 layout，要求 slot 对齐保证不低于入口要求。省略 stride 与显式紧凑 stride 等价；包括 singleton 维在内的不同显式 stride 仍保守要求精确匹配。没有自动 Cast、布局转换、广播或 shape 推导。
 
@@ -91,7 +93,27 @@ dtype 被识别只表示知道存储宽度，不表示已实现该类型的算�
 
 PreparedProgram 保存规范化 tensor、external 标记、有序图级 inputs、按 schedule 排列的入口/输入输出/参数快照及图输出。修改原图或注册表不会影响已经准备好的结果。它只是内部元数据；尚未完成目标设备、ABI、动态库、地址、容量或数值行为验证，不能直接执行。
 
-当前不执行 kernel、不解析 JSON、不分配 tensor/workspace 内存，不支持原地更新、状态、多流、控制流或动态输出。公共 C ABI 与 loader 仍是下一步。
+plan 层仍不执行 kernel、不分配 tensor/workspace。执行路径由下面的 CPU Session 提供；当前整体仍不解析 JSON，不支持原地更新、状态、多流、控制流或动态输出。
+
+### 2.5 实验 C ABI 与 CPU Session
+
+[experimental.h](../runtime/abi/experimental.h) 可供 C11 与 C++17 编译器使用，结构体只含固定宽度整数、固定数组和原生指针；运行时与动态库必须使用兼容的目标架构、调用约定和默认结构体布局。它使用 `lm_ku_caps_exp_v1` 能力查询符号和 EntryContract 指定的入口（示例为 `lm_ku_entry_exp_v1`），与 04 文档的目标 S0 ABI 不互通。实验版本号必须精确匹配；`struct_size` 至少覆盖本版结构。ABI 变更需重新编译库。
+
+Session 创建时先调用 `prepare_program` 保存独立快照，不接受调用方任意构造的 PreparedProgram 作为已校验凭据。随后通过 `(kernel, implementation)` 匹配显式库路径，用 `dlopen(RTLD_NOW | RTLD_LOCAL)` / `dlsym` 加载实际入口。缺失、重复、未使用的库映射被拒绝。动态库必须声明同步 CPU，未知能力位、异步库、版本不符、缺失符号都会被拒绝。二进制 caps 的名称、实现、入口符号、数值契约、端口数量、参数字节数、workspace 大小/对齐必须与 EntryContract 一致，各端口的对齐声明还须覆盖二进制最低要求。
+
+完整 tensor 类型/shape/stride/layout 由已有注册表与图匹配；本版 caps 不重复存储端口 TensorDesc，也不证明库实际满足数值行为。二进制与元数据须配套提供；示例 kernel 还会自行检查可支持的 buffer 描述。动态库在宿主进程内运行，遵守 ABI 的本地代码是此原型的前提。
+
+Buffer 与资源生命周期：
+
+- `constants` 按 slot ID 传入，必须恰好覆盖图输入以外的全部 external slot；创建时检查、分配并复制，不依赖调用方后续保留权重。
+- `run(inputs)` 按 graph.inputs 顺序接收 BufferView。输入借用到 run 返回，期间调用方不能修改；检查非空存储的非空地址、容量、对齐和地址范围溢出。零存储跨度允许 NULL。不同输入 slot 的存储跨度重叠被拒绝；构造时不同常量 slot 也执行相同检查。
+- 每次 run 为全部内部 slot 独立分配满足对齐的内存，没有 arena、跨次 buffer 复用或生命周期复用。内部存储先清零，避免带 padding 的输出暴露未初始化字节；kernel 仍负责写全所有逻辑输出值。
+- workspace 取所有调用的最大大小和最大对齐，每次 run 分配一次、按串行顺序复用；传给各 kernel 的容量为该入口声明值，内容不保证初始化。参数是只读字节块，不承诺类型对齐，kernel 用 memcpy 读取。
+- 所有输入检查、buffer/workspace 和调用描述分配在执行第一个节点前完成。stream 始终为 NULL，kernel 必须完成全部工作才返回，不得保存传入指针、提交异步任务或跨 ABI 抛异常。
+- RunResult 的 outputs 按图输出顺序保存独立于 Session 生命周期的共享所有权；内部结果直接保留分配，输入/常量直接作为输出时复制存储。重复的输出 ID 共享同一份结果；下次 run 不会覆盖旧结果。
+- Session 销毁或构造失败时释放已加载的库与常量；每次调用的中间存储和 scratch 在返回/异常时释放。暂不承诺同一 Session 并发调用安全。
+
+错误通过 `cpu::Error` 抛出，包含错误类别、适用的 node/slot 和原始 kernel status；prepare 失败还保留原始 Diagnostic。kernel 返回 1..255 归为 kernel 错误，其他非零返回值归为协议错误；立即停止后续节点，不返回部分结果，也不回滚已经执行的 kernel 副作用。内存分配失败使用标准 `std::bad_alloc`。
 
 ## 3 构建与验证
 
@@ -105,6 +127,35 @@ ctest --test-dir build --output-on-failure
 ./build/loom-contract-demo
 ```
 
+实验 CPU 路径默认关闭；在 POSIX 平台显式开启，需要额外的 C11 编译器：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DLOOM_ENABLE_EXPERIMENTAL_ABI=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/loom-cpu-demo ./build/libloom-example-add.so ./build/libloom-example-relu.so
+```
+
+上面的库后缀适用于 Linux；其他平台用实际生成的文件名。示例输出 `relu((input + bias)) * 2: 0 0 0 2 4 6`，并逐元素检查结果。`add.c` 用 C 编译，`relu_scale.cpp` 用 C++ 编译，都是独立共享库，只包含实验 ABI 头文件、不链接 loom_cpu/loom_plan；构建时生成，运行时只加载。两个示例仅实现 scalar/1D f32，支持正 stride 与空 tensor，不代表 runtime 只接受这一种 dtype/shape。宿主调用见 [cpu_demo.cpp](../examples/cpu_demo.cpp)，图与入口声明见 [cpu_graph.h](../examples/cpu_graph.h)。
+
+也可以在仓库根目录用外部编译命令替换 add 库，验证运行时不依赖其构建方式：
+
+```sh
+cc -std=c11 -fPIC -fvisibility=hidden -shared -Iruntime examples/kernels/add.c -o build/libexternal-add.so
+./build/loom-cpu-demo ./build/libexternal-add.so ./build/libloom-example-relu.so
+```
+
+内存与未定义行为检查用独立构建目录开启，GCC 或 Clang 均可：
+
+```sh
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+  -DLOOM_ENABLE_EXPERIMENTAL_ABI=ON -DLOOM_ENABLE_SANITIZERS=ON
+cmake --build build-asan
+ctest --test-dir build-asan --output-on-failure
+```
+
+该选项为全部目标（含动态库 kernel）加上 AddressSanitizer、UndefinedBehaviorSanitizer 和 LeakSanitizer，并启用 `-fno-sanitize-recover=all`，首次命中即失败。kernel 库一起插桩，所以越界访问会在库内被检出，而不是只依赖红色区域。当前 88 项测试在该配置下全部通过。
+
 CMake 默认导出编译数据库；使用 Ninja 或 Unix Makefiles 配置后，会生成 `build/compile_commands.json`，供 clangd 读取。
 
 VS Code 打开仓库后，安装工作区推荐的 clangd 和 CMake Tools 扩展，并确保 `clangd` 在 `PATH` 中可用。工作区配置会在打开项目时运行 CMake，并让 clangd 使用 `build/` 下的编译数据库。也可以手动运行上面的配置命令，或执行 `CMake: Configure`；首次生成数据库后若编辑器诊断未刷新，可执行 `clangd: Restart language server`。已安装 Microsoft C/C++ 扩展时，工作区会关闭它的 IntelliSense，避免与 clangd 重复诊断。
@@ -115,11 +166,12 @@ VS Code 打开仓库后，安装工作区推荐的 clangd 和 CMake Tools 扩展
 
 测试覆盖 Graph 创建/修改/删除、非法编辑拒绝、编辑器在容器扩容后的有效性，以及图级输入合法性、输入顺序与权重区分、DAG 结构、尺寸与跨度溢出、标量/空 tensor、padding/转置、非法 stride、入口重复/缺失、参数/端口数量、端口顺序、dtype/shape/layout/stride/对齐、数值契约以及快照所有权。使用实际检查而非依赖 `assert`，Release 构建也执行断言。
 
+开启实验选项后，还测试真实动态库执行、C/C++ ABI 互通、权重快照、重复运行和输出寿命、输入顺序/容量/对齐/别名、scalar/空/带 stride 计算，以及通过故障动态库验证缺失符号、截断 caps、错误版本/能力/契约和 kernel 失败后停止。默认 Debug 构建与 `LOOM_ENABLE_SANITIZERS` 构建都执行同一批测试；后者额外检查越界、泄漏和未定义行为，当前均通过。
+
 ## 4 接下来的代码顺序
 
-1. 实现实验 C ABI、CPU KernelUnit 动态加载与同步执行，跑通外部编译的两个小算子和 buffer 生命周期。
-2. 接入 JSON schema、包加载与明确的版本/能力拒绝规则，再增加内存分配；不要在原型里另造 JSON 解析器。
-3. 增加真实设备后端、显式 FP32/FP16 转换、混合累加契约及异步所有权验证，然后评审 ABI 冻结。
-4. session API 稳定到可调用后接入可选 Python 绑定；自动精度搜索、量化和高级调度单独扩展。
+1. 接入 JSON schema、包加载与明确的格式版本/能力拒绝规则；不要在原型里另造 JSON 解析器。CPU 调用闭环已实现，后续评估 arena 与 buffer 复用。
+2. 增加真实设备后端、显式 FP32/FP16 转换、混合累加契约及异步所有权验证，然后评审 ABI 冻结。
+3. session API 完成上述验证后接入可选 Python 绑定；自动精度搜索、量化和高级调度单独扩展。
 
 每一步先完成可验证的调用闭环，再增加范围。首批原型不等于 M0 全部完成。

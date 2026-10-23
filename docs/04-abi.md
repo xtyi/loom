@@ -1,6 +1,6 @@
 # 04 KernelUnit ABI 规范（v1.0 草案，目标 S0）
 
-本章为设计草案，尚未对应发布头文件。冻结条件见 03 文档第 0 节。当前 `runtime/plan/entry.h` 仅实现内部入口元数据及静态绑定检查，不是下面的可调用 C ABI；已实现范围见 16 文档。
+本章为设计草案，尚未对应发布头文件。冻结条件见 03 文档第 0 节。`runtime/plan/entry.h` 实现内部入口元数据及静态绑定检查；目前可调用的是独立的 [实验 CPU ABI](../runtime/abi/experimental.h)，使用 `lm_ku_*_exp_v1` 符号，不是下面的目标 S0 ABI。实验版仅同步执行、stream 为 NULL、固定 workspace、无 alias，并按各 slot/入口声明保证对齐，未采用本章的统一 256 字节对齐。构建、调用和完整限制见 [16 文档](16-implementation.md)。
 
 这份头文件是引擎与外部 kernel 之间唯一的硬边界。
 

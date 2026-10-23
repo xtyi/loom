@@ -70,6 +70,13 @@ abi-corpus-test:
 
 任何新增的跨界元素都要先在这里登记。
 
+当前已实现的实验接口独立登记如下，不与下表的目标 S0 接口互通：
+
+| 元素 | 当前级别 | 位置与启用方式 |
+|---|---|---|
+| `LmExpBuffer`、`LmExpKernelArgs`、`LmExpCaps`，`lm_ku_caps_exp_v1` / `lm_ku_entry_exp_v1` | S2 实验 | `runtime/abi/experimental.h`；构建显式启用 `LOOM_ENABLE_EXPERIMENTAL_ABI=ON`；版本精确匹配，不承诺跨修订兼容 |
+| `loom::cpu::Session`、BufferView、RunResult、Error | S3 内部 | `runtime/cpu/session.h`；同步 CPU 宿主封装 |
+
 ### 3.1 引擎与包
 
 | 元素 | 级别 | 位置 | 变更规则 |

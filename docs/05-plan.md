@@ -18,7 +18,7 @@ ONNX、StableHLO 适合作为离线输入，不是任意预编译 KernelUnit 的
 
 ### 首批实现子集
 
-首批 C++ 原型只验证不可变值的执行 DAG：每个非外部 slot 恰有一个生产者，外部 slot 由调用方或权重加载提供且只读。暂不实现 alias、原地更新、persistent 状态、多流、控制流和动态输出；下文这些字段属于后续设计，不能据此声称原型已支持。当前内存中的 Graph 也不是 JSON schema 的完整实现。现已增加静态 TensorDesc 与入口绑定检查：`prepare` 仅校验拓扑，`prepare_program` 要求完整的 tensor 与 EntryContract，具体限制见 16 文档。
+首批 C++ 原型使用不可变值的执行 DAG：每个非外部 slot 恰有一个生产者，外部 slot 由调用方或权重加载提供且只读。暂不实现 alias、原地更新、persistent 状态、多流、控制流和动态输出；下文这些字段属于后续设计，不能据此声称原型已支持。当前内存中的 Graph 也不是 JSON schema 的完整实现。`prepare` 仅校验拓扑，`prepare_program` 要求完整的 tensor 与 EntryContract；实验 CPU Session 在此基础上加载动态库并同步执行，每次调用独立分配中间 buffer，具体限制见 16 文档。
 
 ### 一切计算用 KernelUnit 表达
 
