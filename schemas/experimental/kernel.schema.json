@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.invalid/schemas/experimental/kernel.schema.json",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "loom-kernel-exp/1"
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "static-tensors",
+          "cpu-sync"
+        ]
+      }
+    },
+    "meta": {
+      "type": "object"
+    },
+    "kernel": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "implementation": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "symbol": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "tensor": {
+            "$ref": "#/$defs/tensor"
+          }
+        },
+        "required": [
+          "name",
+          "tensor"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$"
+          },
+          "tensor": {
+            "$ref": "#/$defs/tensor"
+          }
+        },
+        "required": [
+          "name",
+          "tensor"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "numerical_contract": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "params_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "workspace_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "workspace_alignment": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "library": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:\\u0000]+$"
+    }
+  },
+  "required": [
+    "format",
+    "kernel",
+    "implementation",
+    "symbol",
+    "inputs",
+    "outputs",
+    "numerical_contract",
+    "library"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "tensor": {
+      "type": "object",
+      "properties": {
+        "dtype": {
+          "enum": [
+            "f16",
+            "bf16",
+            "f32",
+            "f64",
+            "i8",
+            "u8",
+            "i32",
+            "i64",
+            "bool"
+          ]
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "maxItems": 8
+        },
+        "strides": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "maxItems": 8
+        },
+        "layout": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "alignment": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -31,10 +31,10 @@ struct CpuGraph {
     relu.workspace_alignment = 16;
     entries = {add, relu};
 
-    const auto x = graph.add_input(0, tensor);
-    const auto bias = graph.add_external(1, tensor);
-    const auto sum = graph.add_slot(2, tensor);
-    const auto output = graph.add_slot(3, tensor);
+    const auto x = graph.add_input(tensor);
+    const auto bias = graph.add_external(tensor);
+    const auto sum = graph.add_slot(tensor);
+    const auto output = graph.add_slot(tensor);
     plan::EntryBinding scale_binding{relu.ref, relu.numerical_contract, {}};
     scale_binding.params.resize(sizeof(scale));
     std::memcpy(scale_binding.params.data(), &scale, sizeof(scale));

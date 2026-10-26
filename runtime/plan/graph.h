@@ -43,12 +43,14 @@ struct Graph {
   std::vector<SlotId> outputs;
 
   // S3 建图/编辑 API。保留原始字段供序列化、检查和非法图测试使用。
-  // ID 由调用方显式指定；add_input 同时创建 external slot 并追加图输入。
-  // 缺失引用抛 out_of_range，重复 ID 等非法编辑抛 invalid_argument。
+  // Slot ID 自动分配并返回：空图从 0 开始，否则取当前最大 slot ID + 1。
+  // 最大 ID 无法递增时抛 overflow_error；删除 slot 后，其 ID 可能被复用。
+  // Node ID 仍显式指定；add_input 同时创建 external slot 并追加图输入。
+  // 缺失引用抛 out_of_range，重复 node ID 等非法编辑抛 invalid_argument。
   // 全图合法性仍由 prepare/prepare_program 校验；链式调用不是整体事务。
-  SlotId add_slot(SlotId id, TensorDesc tensor = {});
-  SlotId add_external(SlotId id, TensorDesc tensor = {});
-  SlotId add_input(SlotId id, TensorDesc tensor = {});
+  SlotId add_slot(TensorDesc tensor = {});
+  SlotId add_external(TensorDesc tensor = {});
+  SlotId add_input(TensorDesc tensor = {});
   NodeEditor add_node(NodeId id);
   NodeEditor node(NodeId id);
 

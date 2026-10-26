@@ -4,11 +4,11 @@
 
 int main() {
   loom::plan::Graph graph;
-  const auto input = graph.add_input(0);
-  const auto hidden = graph.add_slot(1);
-  const auto left = graph.add_slot(2);
-  const auto right = graph.add_slot(3);
-  const auto output = graph.add_slot(4);
+  const auto input = graph.add_input();
+  const auto hidden = graph.add_slot();
+  const auto left = graph.add_slot();
+  const auto right = graph.add_slot();
+  const auto output = graph.add_slot();
 
   // 刻意按非执行顺序添加节点：顺序由数据依赖决定，不由添加顺序或 id 决定。
   graph.add_node(5).reads({left, right}).writes({output});

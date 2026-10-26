@@ -1,6 +1,7 @@
 #include "plan/graph.h"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -31,34 +32,41 @@ Node& find_node(Graph& graph, NodeId id) {
   return *it;
 }
 
-SlotId append_slot(Graph& graph, SlotId id, bool external, TensorDesc tensor) {
+SlotId next_slot_id(const Graph& graph) {
+  SlotId next = 0;
   for (const auto& slot : graph.slots) {
-    if (slot.id == id) {
-      throw std::invalid_argument("duplicate slot " + std::to_string(id));
+    if (slot.id == std::numeric_limits<SlotId>::max()) {
+      throw std::overflow_error("cannot allocate beyond maximum slot id");
     }
+    next = std::max(next, slot.id + 1);
   }
+  return next;
+}
+
+SlotId append_slot(Graph& graph, SlotId id, bool external, TensorDesc tensor) {
   graph.slots.push_back({id, external, std::move(tensor)});
   return id;
 }
 
 }  // namespace
 
-SlotId Graph::add_slot(SlotId id, TensorDesc tensor) {
-  return append_slot(*this, id, false, std::move(tensor));
+SlotId Graph::add_slot(TensorDesc tensor) {
+  return append_slot(*this, next_slot_id(*this), false, std::move(tensor));
 }
 
-SlotId Graph::add_external(SlotId id, TensorDesc tensor) {
-  return append_slot(*this, id, true, std::move(tensor));
+SlotId Graph::add_external(TensorDesc tensor) {
+  return append_slot(*this, next_slot_id(*this), true, std::move(tensor));
 }
 
-SlotId Graph::add_input(SlotId id, TensorDesc tensor) {
+SlotId Graph::add_input(TensorDesc tensor) {
+  const auto id = next_slot_id(*this);
   // Also detect an existing input id if raw-field edits made the graph invalid.
   if (contains(inputs, id)) {
     throw std::invalid_argument("duplicate graph input " + std::to_string(id));
   }
   auto new_inputs = inputs;
   new_inputs.push_back(id);
-  add_external(id, std::move(tensor));
+  append_slot(*this, id, true, std::move(tensor));
   inputs.swap(new_inputs);
   return id;
 }

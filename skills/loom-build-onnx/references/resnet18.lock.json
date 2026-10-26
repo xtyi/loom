@@ -1,0 +1,27 @@
+{
+  "model": "ResNet-18 v1",
+  "repository": "onnxmodelzoo/resnet18-v1-7",
+  "revision": "e7cb849a949bdceba02356b8b923d53cc01108e1",
+  "filename": "resnet18-v1-7.onnx",
+  "url": "https://huggingface.co/onnxmodelzoo/resnet18-v1-7/resolve/e7cb849a949bdceba02356b8b923d53cc01108e1/resnet18-v1-7.onnx",
+  "sha256": "4e8f8653e7a2222b3904cc3fe8e304cd8b339ce1d05fd24688162f86fb6df52c",
+  "bytes": 46820737,
+  "license": "Apache-2.0",
+  "profile": {
+    "dtype": "f32",
+    "input_name": "data",
+    "input_shape": [1, 3, 224, 224],
+    "input_layout": "NCHW",
+    "output_name": "resnetv15_dense0_fwd",
+    "output_shape": [1, 1000],
+    "backend": "cpu",
+    "atol": 0.0001,
+    "rtol": 0.0001
+  },
+  "observed_model": {
+    "ir_version": 3,
+    "ai_onnx_opset": 8,
+    "nodes": 69,
+    "initializers": 102
+  }
+}

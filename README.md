@@ -68,6 +68,7 @@ docs/
 ├── 14-related-work.md    相关工作、真实水位、本项目的差异
 ├── 15-open-questions.md  待讨论的问题与待定的技术决策
 ├── 16-implementation.md 实现语言、原型范围、构建与下一步
+├── 17-json-package.md    实验 JSON plan、目录包、命令行与可运行示例
 └── decisions/            架构决策记录，记录关键选择的背景与理由
 ```
 
@@ -95,7 +96,9 @@ docs/
 
 ## 现在的状态
 
-设计仍在验证中，ABI 与 plan 尚未冻结。C++17 原型已实现执行 DAG 校验、确定性调度、静态 tensor 描述和入口契约匹配；显式启用实验选项后，可通过 C ABI 加载 CPU 动态库，同步运行两个独立编译的算子，管理输入、权重、输出和 workspace 生命周期。尚未接入模型包和设备后端。构建方式与支持范围见 [16 实现起点](docs/16-implementation.md)。
+设计仍在验证中，ABI 与 plan 尚未冻结。C++17 原型已实现执行 DAG 校验、确定性调度、静态 tensor 描述和入口契约匹配；现可加载实验 JSON plan、kernel manifest 和自包含目录包，通过 `loom-cli inspect/validate` 检查。显式启用实验选项后，可用 `loom-cli run` 通过 C ABI 加载 CPU 动态库，管理输入、权重、输出和 workspace 生命周期。尚未接入模型前端和设备后端。构建方式见 [16 实现起点](docs/16-implementation.md)，完整包示例见 [17 JSON 与目录包](docs/17-json-package.md)。
+
+ONNX 模型接入实验使用 [loom-build-onnx 技能](skills/loom-build-onnx/SKILL.md)：默认选择 ResNet-18 FP32，由离线 Agent 编写模型专用构建脚本和 kernel，生成权重、JSON plan 与目录包，并以独立 ONNX Runtime 结果验收。技能附带锁定模型来源、接口说明及参考/比较工具；完整 ResNet-18 执行包尚未实现。
 
 下一步是 11 文档中的验证期，约三到四周，先弄清这条路在哪里走不通，再决定是否投入半年：
 

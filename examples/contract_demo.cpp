@@ -37,9 +37,9 @@ int main() {
   compute_binding.numerical_contract = "f16-io-f32-accum/v1";
 
   Graph graph;
-  const auto input = graph.add_input(0, full);
-  const auto converted = graph.add_slot(1, half);
-  const auto output = graph.add_slot(2, half);
+  const auto input = graph.add_input(full);
+  const auto converted = graph.add_slot(half);
+  const auto output = graph.add_slot(half);
   graph.add_node(10).reads({converted}).writes({output}).bind(compute_binding);
   graph.add_node(30).reads({input}).writes({converted}).bind(cast_binding);
   graph.set_outputs({output});

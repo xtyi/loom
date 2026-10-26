@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.invalid/schemas/experimental/plan.schema.json",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "loom-plan-exp/1"
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "static-tensors",
+          "single-stream"
+        ]
+      }
+    },
+    "meta": {
+      "type": "object"
+    },
+    "slots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "external": {
+            "type": "boolean"
+          },
+          "tensor": {
+            "$ref": "#/$defs/tensor"
+          }
+        },
+        "required": [
+          "id",
+          "external",
+          "tensor"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          "after": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          },
+          "binding": {
+            "type": "object",
+            "properties": {
+              "kernel": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]+$"
+              },
+              "implementation": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]+$"
+              },
+              "numerical_contract": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]+$"
+              },
+              "params_hex": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-fA-F]{2})*$"
+              }
+            },
+            "required": [
+              "kernel",
+              "implementation",
+              "numerical_contract"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "inputs",
+          "outputs",
+          "binding"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        }
+      },
+      "required": [
+        "order"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "format",
+    "slots",
+    "nodes",
+    "inputs",
+    "outputs"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "tensor": {
+      "type": "object",
+      "properties": {
+        "dtype": {
+          "enum": [
+            "f16",
+            "bf16",
+            "f32",
+            "f64",
+            "i8",
+            "u8",
+            "i32",
+            "i64",
+            "bool"
+          ]
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "maxItems": 8
+        },
+        "strides": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "maxItems": 8
+        },
+        "layout": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "alignment": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

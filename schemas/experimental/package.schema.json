@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.invalid/schemas/experimental/package.schema.json",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "loom-package-exp/1"
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "static-tensors",
+          "single-stream",
+          "cpu-sync"
+        ]
+      }
+    },
+    "meta": {
+      "type": "object"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "const": "cpu"
+        },
+        "abi": {
+          "const": "loom.cpu.exp.v1"
+        },
+        "os": {
+          "enum": [
+            "linux",
+            "macos",
+            "windows"
+          ]
+        },
+        "arch": {
+          "enum": [
+            "x86_64",
+            "aarch64",
+            "x86",
+            "arm"
+          ]
+        },
+        "endianness": {
+          "enum": [
+            "little",
+            "big"
+          ]
+        },
+        "pointer_bits": {
+          "enum": [
+            32,
+            64
+          ]
+        }
+      },
+      "required": [
+        "backend",
+        "abi",
+        "os",
+        "arch",
+        "endianness",
+        "pointer_bits"
+      ],
+      "additionalProperties": false
+    },
+    "plan": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:\\u0000]+$"
+    },
+    "kernels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:\\u0000]+$"
+      }
+    },
+    "constants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:\\u0000]+$"
+          }
+        },
+        "required": [
+          "slot",
+          "file"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "format",
+    "name",
+    "target",
+    "plan",
+    "kernels",
+    "constants"
+  ],
+  "additionalProperties": false
+}

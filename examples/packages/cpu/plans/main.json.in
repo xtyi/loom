@@ -1,0 +1,22 @@
+{
+  "format": "loom-plan-exp/1",
+  "slots": [
+    {"id": 0, "external": true, "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}},
+    {"id": 1, "external": true, "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}},
+    {"id": 2, "external": false, "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}},
+    {"id": 3, "external": false, "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}}
+  ],
+  "nodes": [
+    {
+      "id": 10, "inputs": [2], "outputs": [3],
+      "binding": {"kernel": "relu_scale", "implementation": "cpu",
+                  "numerical_contract": "f32-relu-scale/v1", "params_hex": "@LOOM_PACKAGE_SCALE@"}
+    },
+    {
+      "id": 30, "inputs": [0, 1], "outputs": [2],
+      "binding": {"kernel": "add", "implementation": "cpu", "numerical_contract": "f32-add/v1"}
+    }
+  ],
+  "inputs": [0],
+  "outputs": [3]
+}

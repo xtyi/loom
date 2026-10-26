@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 
@@ -27,37 +28,67 @@ void rejects(Action action) {
 const std::map<std::string, std::function<void()>> cases{
     {"create", [] {
        Graph graph;
-       const auto input = graph.add_input(9);
-       const auto weight = graph.add_external(2);
-       const auto hidden = graph.add_slot(5);
-       const auto output = graph.add_slot(7);
+       const auto input = graph.add_input();
+       const auto weight = graph.add_external();
+       const auto hidden = graph.add_slot();
+       const auto output = graph.add_slot();
        graph.add_node(1).reads({hidden, weight}).writes({output});
        graph.add_node(40).reads({input}).writes({hidden});
        graph.set_outputs({output});
        const auto result = prepare(graph);
        require(result.ok() && result.order == std::vector<NodeId>({40, 1}),
                "builder lost data dependency");
-       require(graph.inputs == std::vector<SlotId>({9}) &&
-                   graph.outputs == std::vector<SlotId>({7}), "incorrect graph interface");
+       require(input == 0 && weight == 1 && hidden == 2 && output == 3,
+               "slot creation APIs must share one ID sequence");
+       require(graph.inputs == std::vector<SlotId>({input}) &&
+                   graph.outputs == std::vector<SlotId>({output}), "incorrect graph interface");
        require(graph.slots[0].external && graph.slots[1].external &&
                    !graph.slots[2].external, "incorrect slot roles");
      }},
+    {"slot_allocation", [] {
+       Graph graph;
+       // Imported/raw slots need not be dense or sorted.
+       graph.slots = {{9, true}, {0, true}, {4, true}};
+       graph.inputs = {4, 0};
+       const auto hidden = graph.add_slot();
+       const auto weight = graph.add_external();
+       const auto input = graph.add_input();
+       require(hidden == 10 && weight == 11 && input == 12 &&
+                   graph.slots[3].id == hidden && graph.slots[4].id == weight &&
+                   graph.slots[5].id == input &&
+                   graph.inputs == std::vector<SlotId>({4, 0, input}),
+               "allocation collided with imported slots or changed input order");
+       graph.remove_slot(hidden);
+       require(graph.add_slot() == 13, "removing a slot caused an ID collision");
+     }},
+    {"slot_id_overflow", [] {
+       const auto max = std::numeric_limits<SlotId>::max();
+       Graph graph;
+       graph.slots.push_back({max - 1, true});
+       require(graph.add_input() == max, "maximum slot ID must remain usable");
+       rejects<std::overflow_error>([&] { graph.add_slot(); });
+       rejects<std::overflow_error>([&] { graph.add_external(); });
+       rejects<std::overflow_error>([&] { graph.add_input(); });
+       require(graph.slots.size() == 2 && graph.slots.back().id == max &&
+                   graph.inputs == std::vector<SlotId>({max}) && prepare(graph).ok(),
+               "allocation overflow changed the graph");
+     }},
     {"modify", [] {
        Graph graph;
-       graph.add_input(9);
-       graph.add_input(2);
-       graph.add_slot(3);
-       graph.add_slot(4);
-       graph.add_node(1).reads({9}).writes({3});
+       const auto first = graph.add_input();
+       const auto second = graph.add_input();
+       const auto old_output = graph.add_slot();
+       const auto output = graph.add_slot();
+       graph.add_node(1).reads({first}).writes({old_output});
        graph.add_node(8);
-       graph.node(1).reads({2, 2}).writes({4}).after({8});
-       graph.remove_slot(3);
-       graph.set_inputs({2, 9});
-       graph.set_outputs({4});
+       graph.node(1).reads({second, second}).writes({output}).after({8});
+       graph.remove_slot(old_output);
+       graph.set_inputs({second, first});
+       graph.set_outputs({output});
        TensorDesc tensor;
        tensor.dtype = DType::f32;
        tensor.shape = {6};
-       graph.set_tensor(4, tensor);
+       graph.set_tensor(output, tensor);
        EntryBinding binding;
        binding.ref = {"unit", "impl"};
        binding.numerical_contract = "v1";
@@ -66,82 +97,83 @@ const std::map<std::string, std::function<void()>> cases{
        const auto result = prepare(graph);
        require(result.ok() && result.order == std::vector<NodeId>({8, 1}),
                "edited after dependency lost");
-       require(graph.nodes[0].inputs == std::vector<SlotId>({2, 2}) &&
-                   graph.nodes[0].outputs == std::vector<SlotId>({4}),
+       require(graph.nodes[0].inputs == std::vector<SlotId>({second, second}) &&
+                   graph.nodes[0].outputs == std::vector<SlotId>({output}),
                "reads/writes must replace rather than append");
-       require(graph.inputs == std::vector<SlotId>({2, 9}) &&
+       require(graph.inputs == std::vector<SlotId>({second, first}) &&
                    graph.slots.back().tensor.shape == std::vector<std::int64_t>({6}) &&
                    graph.nodes[0].binding.params == std::vector<std::uint8_t>({1, 2}),
                "metadata edits lost");
      }},
     {"invalid_edits", [] {
        Graph graph;
-       graph.add_input(0);
-       graph.add_slot(1);
-       graph.add_node(2).reads({0}).writes({1});
-       graph.set_outputs({1});
-       rejects<std::invalid_argument>([&] { graph.add_input(0); });
-       rejects<std::invalid_argument>([&] { graph.add_input(1); });
-       rejects<std::invalid_argument>([&] { graph.add_slot(0); });
-       rejects<std::invalid_argument>([&] { graph.add_external(1); });
+       const auto input = graph.add_input();
+       const auto output = graph.add_slot();
+       graph.add_node(2).reads({input}).writes({output});
+       graph.set_outputs({output});
        rejects<std::invalid_argument>([&] { graph.add_node(2); });
        rejects<std::out_of_range>([&] { graph.node(99); });
        rejects<std::out_of_range>([&] { graph.set_tensor(99, {}); });
-       rejects<std::out_of_range>([&] { graph.set_inputs({0, 99}); });
-       rejects<std::invalid_argument>([&] { graph.set_inputs({1}); });
-       rejects<std::invalid_argument>([&] { graph.set_inputs({0, 0}); });
-       rejects<std::out_of_range>([&] { graph.set_outputs({0, 99}); });
-       rejects<std::out_of_range>([&] { graph.node(2).reads({0, 99}); });
-       rejects<std::out_of_range>([&] { graph.node(2).writes({1, 99}); });
-       rejects<std::invalid_argument>([&] { graph.node(2).writes({0}); });
-       rejects<std::invalid_argument>([&] { graph.node(2).writes({1, 1}); });
+       rejects<std::out_of_range>([&] { graph.set_inputs({input, 99}); });
+       rejects<std::invalid_argument>([&] { graph.set_inputs({output}); });
+       rejects<std::invalid_argument>([&] { graph.set_inputs({input, input}); });
+       rejects<std::out_of_range>([&] { graph.set_outputs({input, 99}); });
+       rejects<std::out_of_range>([&] { graph.node(2).reads({input, 99}); });
+       rejects<std::out_of_range>([&] { graph.node(2).writes({output, 99}); });
+       rejects<std::invalid_argument>([&] { graph.node(2).writes({input}); });
+       rejects<std::invalid_argument>([&] { graph.node(2).writes({output, output}); });
        rejects<std::out_of_range>([&] { graph.node(2).after({99}); });
        rejects<std::invalid_argument>([&] { graph.node(2).after({2}); });
        require(graph.slots.size() == 2 && graph.nodes.size() == 1 &&
-                   graph.inputs == std::vector<SlotId>({0}) &&
-                   graph.outputs == std::vector<SlotId>({1}) &&
-                   graph.nodes[0].inputs == std::vector<SlotId>({0}) &&
-                   graph.nodes[0].outputs == std::vector<SlotId>({1}) &&
+                   graph.inputs == std::vector<SlotId>({input}) &&
+                   graph.outputs == std::vector<SlotId>({output}) &&
+                   graph.nodes[0].inputs == std::vector<SlotId>({input}) &&
+                   graph.nodes[0].outputs == std::vector<SlotId>({output}) &&
                    graph.nodes[0].after.empty() && prepare(graph).ok(),
                "rejected edit changed the graph");
+       Graph invalid;
+       invalid.inputs = {0};
+       rejects<std::invalid_argument>([&] { invalid.add_input(); });
+       require(invalid.slots.empty() && invalid.inputs == std::vector<SlotId>({0}),
+               "rejected input allocation changed the graph");
      }},
     {"editor_lifetime", [] {
        Graph graph;
-       graph.add_input(0);
+       const auto input = graph.add_input();
        auto editor = graph.add_node(1);
        for (NodeId id = 2; id < 300; ++id) graph.add_node(id);
-       editor.reads({0}).after({299});  // Must survive vector reallocation.
-       require(graph.nodes.front().inputs == std::vector<SlotId>({0}) &&
+       editor.reads({input}).after({299});  // Must survive vector reallocation.
+       require(graph.nodes.front().inputs == std::vector<SlotId>({input}) &&
                    graph.nodes.front().after == std::vector<NodeId>({299}),
                "editor no longer refers to its id");
        graph.remove_node(1);
-       rejects<std::out_of_range>([&] { editor.reads({0}); });
+       rejects<std::out_of_range>([&] { editor.reads({input}); });
        graph.add_node(1);
-       editor.reads({0});  // Editors select an id, not a historical node instance.
-       require(graph.nodes.back().inputs == std::vector<SlotId>({0}),
+       editor.reads({input});  // Editors select an id, not a historical node instance.
+       require(graph.nodes.back().inputs == std::vector<SlotId>({input}),
                "editor did not select recreated id");
      }},
     {"remove", [] {
        Graph graph;
-       graph.add_input(0);
-       graph.add_slot(1);
-       graph.add_node(2).reads({0}).writes({1});
+       const auto input = graph.add_input();
+       const auto output = graph.add_slot();
+       graph.add_node(2).reads({input}).writes({output});
        graph.add_node(3).after({2});
-       graph.set_outputs({1});
-       rejects<std::invalid_argument>([&] { graph.remove_slot(0); });
-       rejects<std::invalid_argument>([&] { graph.remove_slot(1); });
+       graph.set_outputs({output});
+       rejects<std::invalid_argument>([&] { graph.remove_slot(input); });
+       rejects<std::invalid_argument>([&] { graph.remove_slot(output); });
        rejects<std::invalid_argument>([&] { graph.remove_node(2); });
        graph.set_inputs({});
        graph.set_outputs({});
-       rejects<std::invalid_argument>([&] { graph.remove_slot(0); });
-       rejects<std::invalid_argument>([&] { graph.remove_slot(1); });
+       rejects<std::invalid_argument>([&] { graph.remove_slot(input); });
+       rejects<std::invalid_argument>([&] { graph.remove_slot(output); });
        graph.node(3).after({});
        graph.remove_node(2);
        const auto incomplete = prepare(graph);
        require(!incomplete.ok() && incomplete.error->code == ErrorCode::missing_producer,
                "removing a producer must not silently remove its tensor");
-       graph.remove_slot(0);
-       graph.remove_slot(1);
+       graph.remove_slot(input);
+       graph.remove_slot(output);
        graph.remove_node(3);
        require(graph.nodes.empty() && graph.slots.empty() && prepare(graph).ok(),
                "explicit graph cleanup failed");
@@ -150,9 +182,9 @@ const std::map<std::string, std::function<void()>> cases{
      }},
     {"global_validation", [] {
        Graph graph;
-       graph.add_slot(1);
-       graph.add_node(2).writes({1});
-       graph.add_node(3).writes({1});
+       const auto output = graph.add_slot();
+       graph.add_node(2).writes({output});
+       graph.add_node(3).writes({output});
        auto result = prepare(graph);
        require(!result.ok() && result.error->code == ErrorCode::multiple_producers,
                "global writer validation bypassed");
@@ -176,12 +208,12 @@ const std::map<std::string, std::function<void()>> cases{
        binding.ref = entry.ref;
        binding.numerical_contract = "exact/v1";
        Graph graph;
-       const auto input = graph.add_input(0, tensor);
-       const auto output = graph.add_slot(1, tensor);
+       const auto input = graph.add_input(tensor);
+       const auto output = graph.add_slot(tensor);
        graph.add_node(10).reads({input}).writes({output}).bind(binding);
        graph.set_outputs({output});
        const auto result = prepare_program(graph, {entry});
-       require(result.ok() && result.value->tensors.at(1).info.span_bytes == 24 &&
+       require(result.ok() && result.value->tensors.at(output).info.span_bytes == 24 &&
                    result.value->calls[0].entry.symbol == "test_identity",
                "edited graph failed full contract validation");
        binding.numerical_contract = "different/v1";

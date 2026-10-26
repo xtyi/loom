@@ -1,0 +1,12 @@
+{
+  "format": "loom-kernel-exp/1",
+  "kernel": "add", "implementation": "cpu",
+  "symbol": "lm_ku_entry_exp_v1",
+  "inputs": [
+    {"name": "x", "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}},
+    {"name": "bias", "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}}
+  ],
+  "outputs": [{"name": "y", "tensor": {"dtype": "f32", "shape": [6], "alignment": 16}}],
+  "numerical_contract": "f32-add/v1",
+  "library": "kernels/add/@CMAKE_SHARED_LIBRARY_PREFIX@loom-example-add@CMAKE_SHARED_LIBRARY_SUFFIX@"
+}

@@ -143,10 +143,10 @@ const std::map<std::string, std::function<void()>> cases{
     rejects(ErrorCode::alignment, [&] {
       Session s(f.example.graph, f.example.entries, libraries(), {{1, {f.bias + 1, 24}}});
     });
-    f.example.graph.add_external(99, f.example.graph.slots[1].tensor);
+    const auto extra = f.example.graph.add_external(f.example.graph.slots[1].tensor);
     rejects(ErrorCode::alias, [&] {
       Session s(f.example.graph, f.example.entries, libraries(),
-                {{1, {f.bias, 24}}, {99, {f.bias, 24}}});
+                {{1, {f.bias, 24}}, {extra, {f.bias, 24}}});
     });
   }},
   {"input_order_alias", [] {
@@ -209,8 +209,8 @@ const std::map<std::string, std::function<void()>> cases{
     Session empty({}, {}, {});
     require(empty.run({}).outputs.empty(), "empty run failed");
     loom::plan::Graph graph;
-    graph.add_input(9, {DType::i32, {}});
-    graph.set_outputs({9});
+    const auto input = graph.add_input({DType::i32, {}});
+    graph.set_outputs({input});
     Session passthrough(graph, {}, {});
     const int32_t value = 123;
     const auto result = passthrough.run({{&value, sizeof(value)}});

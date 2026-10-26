@@ -1,0 +1,17 @@
+{
+  "format": "loom-package-exp/1",
+  "name": "add-relu-cpu",
+  "target": {
+    "backend": "cpu",
+    "abi": "loom.cpu.exp.v1",
+    "os": "@LOOM_PACKAGE_OS@",
+    "arch": "@LOOM_PACKAGE_ARCH@",
+    "endianness": "@LOOM_PACKAGE_ENDIAN@",
+    "pointer_bits": @LOOM_PACKAGE_POINTER_BITS@
+  },
+  "required_capabilities": ["static-tensors", "single-stream", "cpu-sync"],
+  "plan": "plans/main.json",
+  "kernels": ["kernels/add/ku.json", "kernels/relu_scale/ku.json"],
+  "constants": [{"slot": 1, "file": "weights/bias.bin"}],
+  "meta": {"description": "y = relu(x + bias) * 2"}
+}

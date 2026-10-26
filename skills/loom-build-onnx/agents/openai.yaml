@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom ONNX 产物构建"
+  short_description: "指导 AI 将 ONNX 模型生成为 Loom 的 kernel、权重和执行包并验证数值"
+  default_prompt: "使用 $loom-build-onnx，将 ResNet-18 ONNX 模型生成为当前 Loom 项目可执行的 CPU package，并完成与 ONNX Runtime 的数值比对。"

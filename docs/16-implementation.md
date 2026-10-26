@@ -1,6 +1,6 @@
 # 16 实现起点
 
-当前是验证执行契约的原型，已跑通实验 C ABI 与 CPU 动态库的同步执行，不是完整推理引擎。设计文档中的 package、目标 S0 ABI、设备后端、校验服务等多数仍未实现。S0/S1 是未来发布目标，不能据此依赖当前内部类型的布局。
+当前是验证执行契约的原型，已跑通实验 JSON 目录包加载、C ABI 与 CPU 动态库的同步执行，不是完整推理引擎。目标 v1 package、S0 ABI、设备后端、校验服务等仍未实现。S0/S1 是未来发布目标，不能据此依赖当前内部类型的布局。新增目录包的精确格式与命令见 [17 JSON 与目录包](17-json-package.md)。
 
 ## 1 语言与模块
 
@@ -16,7 +16,7 @@
 
 ## 2 当前代码
 
-plan 与宿主接口为内部 S3 C++ 类型，KernelUnit 使用单独的实验 S2 C ABI；均不是已发布的稳定 ABI 或 JSON schema。各层独立验证：
+plan 与宿主接口为内部 S3 C++ 类型，KernelUnit 使用单独的实验 S2 C ABI；JSON 使用单独编号的 `loom-*-exp/1` schema，均不是已发布的稳定格式。各层独立验证：
 
 | 入口 | 作用 | 成功结果 |
 |---|---|---|
@@ -25,6 +25,9 @@ plan 与宿主接口为内部 S3 C++ 类型，KernelUnit 使用单独的实验 S
 | `prepare_program(graph, entries, order)`，`plan/program.h` | 拓扑、全部 tensor、入口注册表与每个端口绑定 | 拥有自身数据的 PreparedProgram 快照 |
 | `cpu::Session(graph, entries, libraries, constants, order)` | 重新 prepare、加载使用到的动态库、匹配二进制 caps、复制常量 | 拥有 metadata、常量与动态库句柄的 Session |
 | `session.run(inputs)` | 输入容量/对齐/重叠检查，分配 buffer/workspace，按顺序同步调用 | 拥有输出存储的 RunResult |
+| `io::load_plan(path)` | 严格 JSON 解码、静态 tensor 与拓扑校验 | 保留文件 ID 的 Graph 和可选 order |
+| `io::load_package(directory)` | 版本、能力、宿主要求、跨文件契约与常量加载 | 可 inspect 的 Package，不加载动态库 |
+| `cpu::load_package(directory)` | 包加载后交给现有 CPU Session | 独立拥有数据并检查二进制 caps 的 Session |
 
 Slot 使用独立 id；外部 slot 已初始化且只读，其余 slot 恰有一个生产者。图级 `inputs` 明确每次调用传入的 slot 及其顺序：引用必须存在、不重复且为 external；不列入 inputs 的 external slot 可由加载阶段提供，如权重/常量。允许空输入列表、未消费的输入，以及输入直接作为图输出；不从 external 自动推断调用接口。节点按 `(kernel, implementation)` 绑定注册表里的 EntryContract。先建立 producer → consumer 与 `after` 边，再用最小就绪 id 拓扑排序；显式顺序必须覆盖全部节点且满足依赖。
 
@@ -32,13 +35,13 @@ Slot 使用独立 id；外部 slot 已初始化且只读，其余 slot 恰有一
 
 ### 2.1 Graph 创建与修改
 
-`Graph` 保留原始数据字段，同时提供轻量编辑 API。调用方显式指定 ID，用局部变量命名 slot，避免依赖嵌套初始化列表的字段顺序：
+`Graph` 保留原始数据字段，同时提供轻量编辑 API。slot ID 自动分配并返回，调用方用局部变量命名 slot；node ID 仍显式指定，避免依赖嵌套初始化列表的字段顺序：
 
 ```cpp
 loom::plan::Graph graph;
-const auto input = graph.add_input(0);
-const auto hidden = graph.add_slot(1);
-const auto output = graph.add_slot(2);
+const auto input = graph.add_input();
+const auto hidden = graph.add_slot();
+const auto output = graph.add_slot();
 
 graph.add_node(10).reads({input}).writes({hidden});
 graph.add_node(20).reads({hidden}).writes({output});
@@ -49,9 +52,13 @@ graph.node(20).reads({input});
 const auto result = loom::plan::prepare(graph);
 ```
 
-`add_input` 创建 external slot 并追加到图输入；`add_external` 创建权重/常量等外部 slot，但不追加到图输入；`add_slot` 创建节点产生的 slot。三者均可传入 TensorDesc；省略描述适用于仅演示拓扑，`prepare_program` 仍要求有效 tensor 和入口绑定。`set_tensor` 替换指定 slot 的描述，`set_inputs` / `set_outputs` 替换有序图接口。`bind` 的完整用法见 [contract_demo.cpp](../examples/contract_demo.cpp)。
+`add_input` 创建 external slot 并追加到图输入；`add_external` 创建权重/常量等外部 slot，但不追加到图输入；`add_slot` 创建节点产生的 slot。三者均不接收 ID，可直接传入 TensorDesc，例如 `graph.add_slot(tensor)`；省略描述适用于仅演示拓扑，`prepare_program` 仍要求有效 tensor 和入口绑定。
 
-编辑 API 检查重复 ID、引用是否存在、写 external slot 等局部错误。因此 slot 必须先创建，再传给 reads/writes；after 引用的节点也必须已创建。缺失 ID 抛 `std::out_of_range`，其他非法编辑抛 `std::invalid_argument`。单次 setter 在检查通过后才替换字段；一整条链式调用不是事务，后一步失败不会回滚前面的操作。编辑期间允许图暂时不完整，环、跨节点多生产者等全图约束仍由 `prepare` 检查，tensor/入口契约仍由 `prepare_program` 检查。
+ID 在空图中从 0 开始，否则取当前已有 slot 的最大 ID 加 1，因此直接填充原始字段后也可继续添加；最大 ID 无法递增时抛 `std::overflow_error`，不修改图。删除 slot 后，其 ID 可能被复用；调用方应使用每次返回的 ID，不依赖固定数值。
+
+`set_tensor` 替换指定 slot 的描述，`set_inputs` / `set_outputs` 替换有序图接口。`bind` 的完整用法见 [contract_demo.cpp](../examples/contract_demo.cpp)。
+
+编辑 API 检查重复 node ID、引用是否存在、写 external slot 等局部错误。因此 slot 必须先创建，再传给 reads/writes；after 引用的节点也必须已创建。缺失 ID 抛 `std::out_of_range`，其他非法编辑抛 `std::invalid_argument`。单次 setter 在检查通过后才替换字段；一整条链式调用不是事务，后一步失败不会回滚前面的操作。编辑期间允许图暂时不完整，环、跨节点多生产者等全图约束仍由 `prepare` 检查，tensor/入口契约仍由 `prepare_program` 检查。
 
 `node(id)` 返回按 ID 查找的 NodeEditor；添加其他节点导致容器扩容，不会使它失效。使用期间 Graph 必须存活且未被移动。删除目标节点后编辑会报错；重新创建相同 ID 后，旧编辑器会选中这个新节点。
 
@@ -93,7 +100,7 @@ dtype 被识别只表示知道存储宽度，不表示已实现该类型的算�
 
 PreparedProgram 保存规范化 tensor、external 标记、有序图级 inputs、按 schedule 排列的入口/输入输出/参数快照及图输出。修改原图或注册表不会影响已经准备好的结果。它只是内部元数据；尚未完成目标设备、ABI、动态库、地址、容量或数值行为验证，不能直接执行。
 
-plan 层仍不执行 kernel、不分配 tensor/workspace。执行路径由下面的 CPU Session 提供；当前整体仍不解析 JSON，不支持原地更新、状态、多流、控制流或动态输出。
+plan 层仍不执行 kernel、不分配 tensor/workspace。执行路径由下面的 CPU Session 提供；JSON 与包加载由独立 `io/` 模块提供。当前不支持原地更新、状态、多流、控制流或动态输出。
 
 ### 2.5 实验 C ABI 与 CPU Session
 
@@ -117,7 +124,7 @@ Buffer 与资源生命周期：
 
 ## 3 构建与验证
 
-需要支持 C++17 的编译器与 CMake 3.20 或更新版本，不需要 Python、GPU SDK 或下载第三方包。
+需要支持 C++17 的编译器与 CMake 3.20 或更新版本，不需要 Python、GPU SDK 或联网下载依赖。JSON 解析器 nlohmann/json 3.12.0 及许可证已固定包含在 `third_party/`，只供 `loom_io` 内部使用。
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -134,6 +141,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DLOOM_ENABLE_EXPERIMENTAL_ABI=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/loom-cpu-demo ./build/libloom-example-add.so ./build/libloom-example-relu.so
+./build/loom-cli inspect build/examples/cpu.loom
+./build/loom-cli validate build/examples/cpu.loom
+./build/loom-cli run build/examples/cpu.loom build/package-output build/examples/cpu.loom/inputs/0.bin
 ```
 
 上面的库后缀适用于 Linux；其他平台用实际生成的文件名。示例输出 `relu((input + bias)) * 2: 0 0 0 2 4 6`，并逐元素检查结果。`add.c` 用 C 编译，`relu_scale.cpp` 用 C++ 编译，都是独立共享库，只包含实验 ABI 头文件、不链接 loom_cpu/loom_plan；构建时生成，运行时只加载。两个示例仅实现 scalar/1D f32，支持正 stride 与空 tensor，不代表 runtime 只接受这一种 dtype/shape。宿主调用见 [cpu_demo.cpp](../examples/cpu_demo.cpp)，图与入口声明见 [cpu_graph.h](../examples/cpu_graph.h)。
@@ -154,7 +164,7 @@ cmake --build build-asan
 ctest --test-dir build-asan --output-on-failure
 ```
 
-该选项为全部目标（含动态库 kernel）加上 AddressSanitizer、UndefinedBehaviorSanitizer 和 LeakSanitizer，并启用 `-fno-sanitize-recover=all`，首次命中即失败。kernel 库一起插桩，所以越界访问会在库内被检出，而不是只依赖红色区域。当前 88 项测试在该配置下全部通过。
+该选项为全部目标（含动态库 kernel）加上 AddressSanitizer、UndefinedBehaviorSanitizer 和 LeakSanitizer，并启用 `-fno-sanitize-recover=all`，首次命中即失败。kernel 库一起插桩，所以越界访问会在库内被检出，而不是只依赖红色区域。在此配置下运行相同的 CTest 测试集。
 
 CMake 默认导出编译数据库；使用 Ninja 或 Unix Makefiles 配置后，会生成 `build/compile_commands.json`，供 clangd 读取。
 
@@ -170,7 +180,7 @@ VS Code 打开仓库后，安装工作区推荐的 clangd 和 CMake Tools 扩展
 
 ## 4 接下来的代码顺序
 
-1. 接入 JSON schema、包加载与明确的格式版本/能力拒绝规则；不要在原型里另造 JSON 解析器。CPU 调用闭环已实现，后续评估 arena 与 buffer 复用。
+1. 静态 JSON schema、目录包加载、版本/能力拒绝规则和 CPU 文件执行闭环已实现；后续扩展 SymExpr、variant 与 arena/buffer 复用，逐步验证目标 v1 格式。
 2. 增加真实设备后端、显式 FP32/FP16 转换、混合累加契约及异步所有权验证，然后评审 ABI 冻结。
 3. session API 完成上述验证后接入可选 Python 绑定；自动精度搜索、量化和高级调度单独扩展。
 
