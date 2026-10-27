@@ -9,12 +9,12 @@
   "nodes": [
     {
       "id": 10, "inputs": [2], "outputs": [3],
-      "binding": {"kernel": "relu_scale", "implementation": "cpu",
+      "binding": {"kernel": "relu_scale", "implementation": "@LOOM_PACKAGE_BACKEND@",
                   "numerical_contract": "f32-relu-scale/v1", "params_hex": "@LOOM_PACKAGE_SCALE@"}
     },
     {
       "id": 30, "inputs": [0, 1], "outputs": [2],
-      "binding": {"kernel": "add", "implementation": "cpu", "numerical_contract": "f32-add/v1"}
+      "binding": {"kernel": "add", "implementation": "@LOOM_PACKAGE_BACKEND@", "numerical_contract": "f32-add/v1"}
     }
   ],
   "inputs": [0],

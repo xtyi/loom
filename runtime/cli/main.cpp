@@ -1,6 +1,9 @@
 #include "io/package.h"
 #ifdef LOOM_CLI_CPU
 #include "cpu/package.h"
+#ifdef LOOM_CLI_CUDA
+#include "nv/package.h"
+#endif
 #endif
 
 #include <fstream>
@@ -24,13 +27,14 @@ int main(int argc, char** argv) {
   }
   try {
 #ifndef LOOM_CLI_CPU
-    if (command == "run") throw std::runtime_error("CPU execution requires -DLOOM_ENABLE_EXPERIMENTAL_ABI=ON");
+    if (command == "run") throw std::runtime_error("Execution requires -DLOOM_ENABLE_EXPERIMENTAL_ABI=ON");
 #endif
     const auto package = loom::io::load_package(argv[2]);
     if (command == "validate") {
       std::cout << "Valid package metadata and constant files; kernels have not been loaded or executed.\n";
     } else if (command == "inspect") {
       std::cout << "Package: " << package.name << " (" << loom::io::package_format << ")\n";
+      std::cout << "Backend: " << package.backend << ", SM: " << package.compute_capability << '\n';
       for (const auto& [id, tensor] : package.program.tensors) {
         std::cout << "slot " << id << ": " << loom::plan::dtype_name(tensor.info.desc.dtype)
                   << ", span=" << tensor.info.span_bytes << " bytes\n";
@@ -54,7 +58,7 @@ int main(int argc, char** argv) {
         throw std::runtime_error("input files must follow graph.inputs order and cover every input");
       }
       std::vector<loom::io::TensorData> storage;
-      std::vector<loom::cpu::BufferView> inputs;
+      std::vector<loom::execution::BufferView> inputs;
       for (std::size_t i = 0; i < package.program.inputs.size(); ++i) {
         const auto slot = package.program.inputs[i];
         storage.push_back(loom::io::load_tensor(argv[4 + i], package.program.tensors.at(slot).info));
@@ -65,7 +69,16 @@ int main(int argc, char** argv) {
         const auto path = std::filesystem::path(argv[3]) / (std::to_string(i) + ".bin");
         if (std::filesystem::exists(path)) throw std::runtime_error("output already exists: " + path.string());
       }
-      const auto result = loom::cpu::make_session(package)->run(inputs);
+      std::unique_ptr<loom::execution::Session> session;
+      if (package.backend == "cpu") session = loom::cpu::make_session(package);
+      else {
+#ifdef LOOM_CLI_CUDA
+        session = loom::nv::make_session(package);
+#else
+        throw std::runtime_error("CUDA execution requires -DLOOM_ENABLE_CUDA=ON");
+#endif
+      }
+      const auto result = session->run(inputs);
       for (std::size_t i = 0; i < result.outputs.size(); ++i) {
         const auto& tensor = result.outputs[i];
         const auto path = std::filesystem::path(argv[3]) / (std::to_string(i) + ".bin");

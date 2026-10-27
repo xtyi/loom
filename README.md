@@ -69,6 +69,7 @@ docs/
 ├── 15-open-questions.md  待讨论的问题与待定的技术决策
 ├── 16-implementation.md 实现语言、原型范围、构建与下一步
 ├── 17-json-package.md    实验 JSON plan、目录包、命令行与可运行示例
+├── 18-backends.md        公共执行抽象、CPU/CUDA backend、构建与验证
 └── decisions/            架构决策记录，记录关键选择的背景与理由
 ```
 
@@ -96,7 +97,7 @@ docs/
 
 ## 现在的状态
 
-设计仍在验证中，ABI 与 plan 尚未冻结。C++17 原型已实现执行 DAG 校验、确定性调度、静态 tensor 描述和入口契约匹配；现可加载实验 JSON plan、kernel manifest 和自包含目录包，通过 `loom-cli inspect/validate` 检查。显式启用实验选项后，可用 `loom-cli run` 通过 C ABI 加载 CPU 动态库，管理输入、权重、输出和 workspace 生命周期。尚未接入模型前端和设备后端。构建方式见 [16 实现起点](docs/16-implementation.md)，完整包示例见 [17 JSON 与目录包](docs/17-json-package.md)。
+设计仍在验证中，ABI 与 plan 尚未冻结。C++17 原型已实现执行 DAG 校验、确定性调度、静态 tensor 描述和入口契约匹配；现可加载实验 JSON plan、kernel manifest 和自包含目录包，通过 `loom-cli inspect/validate` 检查。显式启用实验选项后，可用 `loom-cli run` 通过公共执行器加载 CPU 或 NVIDIA CUDA KernelUnit，管理输入、权重、输出和 workspace 生命周期。CUDA backend 可选构建，提供单 stream、同步宿主接口；尚未接入模型前端。构建方式见 [16 实现起点](docs/16-implementation.md)，完整包示例见 [17 JSON 与目录包](docs/17-json-package.md)，抽象调整和 CUDA 用法见 [18 执行器与后端](docs/18-backends.md)。
 
 ONNX 模型接入实验使用 [loom-build-onnx 技能](skills/loom-build-onnx/SKILL.md)：默认选择 ResNet-18 FP32，由离线 Agent 编写模型专用构建脚本和 kernel，生成权重、JSON plan 与目录包，并以独立 ONNX Runtime 结果验收。技能附带锁定模型来源、接口说明及参考/比较工具；完整 ResNet-18 执行包尚未实现。
 

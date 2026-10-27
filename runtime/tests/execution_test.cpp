@@ -1,4 +1,14 @@
-#include "examples/cpu_graph.h"
+#include "examples/elementwise_graph.h"
+#ifdef LOOM_TEST_CUDA
+#include "nv/session.h"
+#include <cuda_runtime_api.h>
+namespace tested = loom::nv;
+constexpr const char* implementation = "cuda";
+#else
+#include "cpu/session.h"
+namespace tested = loom::cpu;
+constexpr const char* implementation = "cpu";
+#endif
 
 #include <cstring>
 #include <dlfcn.h>
@@ -7,12 +17,15 @@
 #include <limits>
 #include <string>
 
-using loom::cpu::BufferView;
-using loom::cpu::Error;
-using loom::cpu::ErrorCode;
-using loom::cpu::KernelLibrary;
-using loom::cpu::Session;
-using loom::examples::CpuGraph;
+using tested::BufferView;
+using tested::Error;
+using tested::ErrorCode;
+using tested::KernelLibrary;
+using tested::Session;
+struct CpuGraph : loom::examples::ElementwiseGraph {
+  explicit CpuGraph(loom::plan::TensorDesc desc = {loom::plan::DType::f32, {6}, {}, 0, 16},
+                    float scale = 2.f) : ElementwiseGraph(desc, scale, implementation) {}
+};
 using loom::plan::DType;
 using loom::plan::TensorDesc;
 
@@ -22,7 +35,7 @@ void require(bool value, const std::string& message) {
   if (!value) throw std::runtime_error(message);
 }
 std::vector<KernelLibrary> libraries() {
-  return {{{"add", "cpu"}, add_path}, {{"relu_scale", "cpu"}, relu_path}};
+  return {{{"add", implementation}, add_path}, {{"relu_scale", implementation}, relu_path}};
 }
 struct Fixture {
   CpuGraph example{};
@@ -43,7 +56,7 @@ Error rejects(ErrorCode code, Fn fn) {
   }
   throw std::runtime_error("invalid operation accepted");
 }
-void values(const loom::cpu::OutputTensor& output, const std::vector<float>& expected) {
+void values(const tested::OutputTensor& output, const std::vector<float>& expected) {
   require(output.info.elements == expected.size(), "wrong element count");
   const auto* data = static_cast<const float*>(output.data.get());
   const auto stride = output.info.desc.shape.empty() ? 1 : output.info.desc.strides[0];
@@ -187,7 +200,7 @@ const std::map<std::string, std::function<void()>> cases{
     rejects(ErrorCode::invalid_library, [&] {
       Session s(f.example.graph, f.example.entries, libs, f.constants());
     });
-    libs = libraries(); libs.push_back({{"unused", "cpu"}, add_path});
+    libs = libraries(); libs.push_back({{"unused", implementation}, add_path});
     rejects(ErrorCode::invalid_library, [&] {
       Session s(f.example.graph, f.example.entries, libs, f.constants());
     });
@@ -227,7 +240,7 @@ const std::map<std::string, std::function<void()>> cases{
   }},
   {"fail_fast", [] {
     Fixture f;
-    f.example.graph.node(10).reads({2, 1}).bind({{"add", "cpu"}, "f32-add/v1", {}});
+    f.example.graph.node(10).reads({2, 1}).bind({{"add", implementation}, "f32-add/v1", {}});
     f.example.entries.resize(1);
     // Hold a separate reference to observe invocations across failed runs.
     void* handle = dlopen(fixture_path.c_str(), RTLD_NOW | RTLD_LOCAL);
@@ -236,7 +249,7 @@ const std::map<std::string, std::function<void()>> cases{
     const auto calls = reinterpret_cast<int (*)(void)>(dlsym(handle, "lm_test_calls"));
     require(calls != nullptr && calls() == 0, "invalid probe");
     Session session(f.example.graph, f.example.entries,
-                    {{{"add", "cpu"}, fixture_path}}, f.constants());
+                    {{{"add", implementation}, fixture_path}}, f.constants());
     rejects(ErrorCode::capacity, [&] { session.run({{f.input, 1}}); });
     require(calls() == 0, "executed kernel before validating all buffers");
     for (int i = 1; i <= 2; ++i) {
@@ -267,6 +280,13 @@ const std::map<std::string, ErrorCode> caps_cases{
 } // namespace
 
 int main(int argc, char** argv) {
+#ifdef LOOM_TEST_CUDA
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
+    std::cout << "SKIP: no CUDA device available\n";
+    return 77;
+  }
+#endif
   if (argc < 4) return 2;
   add_path = argv[2]; relu_path = argv[3];
   if (argc > 4) fixture_path = argv[4];

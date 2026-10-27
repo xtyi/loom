@@ -41,8 +41,8 @@ fs::path member(const fs::path& root, const std::string& name,
   return path;
 }
 
-void target(const Json& j, const Reader& r) {
-  r.object(j, "$.target", {"backend", "abi", "os", "arch", "endianness", "pointer_bits"});
+void target(const Json& j, const Reader& r, Package& out) {
+  r.object(j, "$.target", {"backend", "abi", "os", "arch", "endianness", "pointer_bits"}, {"compute_capability"});
   const auto host = host_target();
   if (host.os == "unknown" || host.arch == "unknown") {
     r.fail(ErrorCode::target, "$.target", "this host target is not supported by the experimental format");
@@ -51,8 +51,20 @@ void target(const Json& j, const Reader& r) {
     const auto path = std::string("$.target.") + field;
     if (r.string(j.at(field), path) != wanted) r.fail(ErrorCode::target, path, "requires " + wanted);
   };
-  equal("backend", "cpu");
-  equal("abi", "loom.cpu.exp.v1");
+  out.backend = r.string(j.at("backend"), "$.target.backend");
+  if (out.backend != "cpu" && out.backend != "cuda") {
+    r.fail(ErrorCode::target, "$.target.backend", "expected cpu or cuda");
+  }
+  equal("abi", out.backend == "cpu" ? "loom.cpu.exp.v1" : "loom.cuda.exp.v1");
+  if (out.backend == "cuda") {
+    if (!j.contains("compute_capability")) {
+      r.fail(ErrorCode::target, "$.target.compute_capability", "CUDA target requires an explicit SM version");
+    }
+    out.compute_capability = static_cast<int>(r.uint(j.at("compute_capability"), "$.target.compute_capability", 999));
+    if (out.compute_capability < 10) r.fail(ErrorCode::target, "$.target.compute_capability", "invalid SM version");
+  } else if (j.contains("compute_capability")) {
+    r.fail(ErrorCode::target, "$.target.compute_capability", "CPU target cannot require a GPU architecture");
+  }
   equal("os", host.os);
   equal("arch", host.arch);
   equal("endianness", host.endianness);
@@ -117,10 +129,12 @@ Package load_package(const fs::path& directory) {
   const auto manifest = member(root, "package.json", Reader{directory.string()}, "$");
   const Reader r{manifest.string()};
   const auto j = detail::parse(detail::read_text(manifest), r);
-  r.header(j, package_format, {"static-tensors", "single-stream", "cpu-sync"});
+  r.header(j, package_format, {"static-tensors", "single-stream", "cpu-sync", "cuda-stream"});
   r.object(j, "$", {"format", "name", "target", "plan", "kernels", "constants"}, {"required_capabilities", "meta"});
-  target(j.at("target"), r); // Reject incompatible native data/ABI before loading other files.
   Package out;
+  target(j.at("target"), r, out); // 只校验元数据；真实设备在创建 Session 时检查。
+  const auto execution_capability = out.backend == "cpu" ? "cpu-sync" : "cuda-stream";
+  r.header(j, package_format, {"static-tensors", "single-stream", execution_capability});
   out.root = root;
   out.name = r.string(j.at("name"), "$.name");
   const auto plan_path = member(root, r.string(j.at("plan"), "$.plan"), r, "$.plan");
@@ -131,6 +145,7 @@ Package load_package(const fs::path& directory) {
     const auto path = member(root, r.string(kernels[i], field), r, field);
     const Reader kr{path.string()};
     const auto kernel = detail::parse(detail::read_text(path), kr);
+    kr.header(kernel, kernel_format, {"static-tensors", execution_capability});
     auto contract = detail::entry(kernel, kr);
     out.libraries.push_back({contract.ref, member(root, kr.string(kernel.at("library"), "$.library"), kr, "$.library")});
     out.entries.push_back(std::move(contract));

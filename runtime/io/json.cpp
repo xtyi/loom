@@ -188,7 +188,7 @@ void program_error(const Reader& r, const plan::Diagnostic& diagnostic) {
 }
 
 plan::EntryContract entry(const Json& j, const Reader& r) {
-  r.header(j, kernel_format, {"static-tensors", "cpu-sync"});
+  r.header(j, kernel_format, {"static-tensors", "cpu-sync", "cuda-stream"});
   r.object(j, "$", {"format", "kernel", "implementation", "symbol", "inputs", "outputs",
                      "numerical_contract", "library"},
                     {"params_bytes", "workspace_bytes", "workspace_alignment", "required_capabilities", "meta"});

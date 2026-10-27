@@ -1,13 +1,13 @@
 # 16 实现起点
 
-当前是验证执行契约的原型，已跑通实验 JSON 目录包加载、C ABI 与 CPU 动态库的同步执行，不是完整推理引擎。目标 v1 package、S0 ABI、设备后端、校验服务等仍未实现。S0/S1 是未来发布目标，不能据此依赖当前内部类型的布局。新增目录包的精确格式与命令见 [17 JSON 与目录包](17-json-package.md)。
+当前是验证执行契约的原型，已跑通实验 JSON 目录包加载、C ABI 与 CPU/CUDA 动态库的同步宿主执行，不是完整推理引擎。目标 v1 package、S0 ABI、校验服务等仍未实现。S0/S1 是未来发布目标，不能据此依赖当前内部类型的布局。新增目录包的精确格式与命令见 [17 JSON 与目录包](17-json-package.md)。
 
 ## 1 语言与模块
 
 | 部分 | 选择 | 理由 |
 |---|---|---|
 | runtime / CLI | C++17 | 资源生命周期、设备接口、厂商库生态与本地调用 |
-| 宿主与 KernelUnit 边界 | 实验 C ABI，CPU 同步子集 | 隔离 C++ 对象布局；版本与能力检查；尚未冻结 |
+| 宿主与 KernelUnit 边界 | 实验 C ABI，CPU 同步 / CUDA stream 子集 | 隔离 C++ 对象布局；版本与能力检查；尚未冻结 |
 | 构建与基础测试 | CMake / CTest | 无 GPU、无网络依赖即可运行 |
 | 离线构建与验证 | Python，后续实现 | 模型生态、Agent 驱动、数据与实验流程 |
 | Python 绑定 | 可选 pybind11，后续实现 | 包装宿主 API，核心不依赖解释器 |
@@ -27,7 +27,7 @@ plan 与宿主接口为内部 S3 C++ 类型，KernelUnit 使用单独的实验 S
 | `session.run(inputs)` | 输入容量/对齐/重叠检查，分配 buffer/workspace，按顺序同步调用 | 拥有输出存储的 RunResult |
 | `io::load_plan(path)` | 严格 JSON 解码、静态 tensor 与拓扑校验 | 保留文件 ID 的 Graph 和可选 order |
 | `io::load_package(directory)` | 版本、能力、宿主要求、跨文件契约与常量加载 | 可 inspect 的 Package，不加载动态库 |
-| `cpu::load_package(directory)` | 包加载后交给现有 CPU Session | 独立拥有数据并检查二进制 caps 的 Session |
+| `cpu::load_package(directory)` | 包加载后交给公共 Session | 独立拥有数据并检查二进制 caps 的 Session |
 
 Slot 使用独立 id；外部 slot 已初始化且只读，其余 slot 恰有一个生产者。图级 `inputs` 明确每次调用传入的 slot 及其顺序：引用必须存在、不重复且为 external；不列入 inputs 的 external slot 可由加载阶段提供，如权重/常量。允许空输入列表、未消费的输入，以及输入直接作为图输出；不从 external 自动推断调用接口。节点按 `(kernel, implementation)` 绑定注册表里的 EntryContract。先建立 producer → consumer 与 `after` 边，再用最小就绪 id 拓扑排序；显式顺序必须覆盖全部节点且满足依赖。
 
@@ -74,7 +74,7 @@ ID 在空图中从 0 开始，否则取当前已有 slot 的最大 ID 加 1，�
 | `layout` | 不透明整数，精确匹配；0 是默认标签，不是通配符，不推导 NCHW/NHWC 语义 |
 | `alignment` | 保证的基址字节对齐，非零 2 的幂；默认 1，不隐式推导自然对齐 |
 
-dtype 被识别只表示知道存储宽度，不表示已实现该类型的算术 kernel。描述中不含 data 指针；CPU Session 在调用/分配阶段检查声明容量、地址对齐、跨输入 slot 的存储跨度重叠，并管理输出寿命。调用方仍须提供真实有效的主机内存及容量；设备指针不属于该接口。
+dtype 被识别只表示知道存储宽度，不表示已实现该类型的算术 kernel。描述中不含 data 指针；公共 Session 在调用/分配阶段检查声明容量、地址对齐、跨输入 slot 的存储跨度重叠，并管理输出寿命。调用方仍须提供真实有效的主机内存及容量；设备指针不属于该接口。
 
 非空 tensor 的 `span_bytes = (1 + sum((dim-1)*stride)) * element_bytes`，包含中间 padding，不包含尾部对齐补齐。标量占一个元素。计算使用检查过的乘法/加法，要求元素数、stride、存储跨度不超过 `min(SIZE_MAX, INT64_MAX)`；不分配该大小的内存。
 
@@ -86,11 +86,11 @@ dtype 被识别只表示知道存储宽度，不表示已实现该类型的算�
 
 `plan/entry.h` 定义入口元数据：
 
-- `(kernel, implementation)` 是唯一注册键，`symbol` 是需要加载的符号名；prepare 阶段仅检查名称非空且无 NUL，不解析库、不查找函数。CPU Session 随后按这个符号解析真实入口。
+- `(kernel, implementation)` 是唯一注册键，`symbol` 是需要加载的符号名；prepare 阶段仅检查名称非空且无 NUL，不解析库、不查找函数。公共 Session 随后按这个符号解析真实入口。
 - `inputs`/`outputs` 是有序端口；输入只读、输出只写。每个方向内端口名称唯一，端口采用静态 TensorDesc。
 - `numerical_contract` 是必要的、不透明的版本/内容 ID；节点必须明确要求同一 ID。它用于区分相同存储 dtype 下的不同累加/舍入方案，不证明二进制实际符合这些行为。
 - `params_bytes` 要求节点提供恰好相同大小的参数块；内容不透明，尚不检查参数内部 schema。
-- `workspace_bytes` 和 `workspace_alignment` 是固定资源要求；prepare 检查尺寸与对齐合法性，随后保存在调用快照中。CPU Session 每次 run 分配满足所有调用要求的共享 scratch，串行复用。
+- `workspace_bytes` 和 `workspace_alignment` 是固定资源要求；prepare 检查尺寸与对齐合法性，随后保存在调用快照中。公共 Session 每次 run 分配满足所有调用要求的共享 scratch，串行复用。
 
 注册表中的所有入口均校验，包括未使用项。每个调用按位置逐端口比较 dtype、完整 shape、规范化 stride 和 layout，要求 slot 对齐保证不低于入口要求。省略 stride 与显式紧凑 stride 等价；包括 singleton 维在内的不同显式 stride 仍保守要求精确匹配。没有自动 Cast、布局转换、广播或 shape 推导。
 
@@ -100,13 +100,13 @@ dtype 被识别只表示知道存储宽度，不表示已实现该类型的算�
 
 PreparedProgram 保存规范化 tensor、external 标记、有序图级 inputs、按 schedule 排列的入口/输入输出/参数快照及图输出。修改原图或注册表不会影响已经准备好的结果。它只是内部元数据；尚未完成目标设备、ABI、动态库、地址、容量或数值行为验证，不能直接执行。
 
-plan 层仍不执行 kernel、不分配 tensor/workspace。执行路径由下面的 CPU Session 提供；JSON 与包加载由独立 `io/` 模块提供。当前不支持原地更新、状态、多流、控制流或动态输出。
+plan 层仍不执行 kernel、不分配 tensor/workspace。执行路径由下面的公共 Session 提供；JSON 与包加载由独立 `io/` 模块提供。当前不支持原地更新、状态、多流、控制流或动态输出。
 
-### 2.5 实验 C ABI 与 CPU Session
+### 2.5 实验 C ABI 与公共 Session
 
 [experimental.h](../runtime/abi/experimental.h) 可供 C11 与 C++17 编译器使用，结构体只含固定宽度整数、固定数组和原生指针；运行时与动态库必须使用兼容的目标架构、调用约定和默认结构体布局。它使用 `lm_ku_caps_exp_v1` 能力查询符号和 EntryContract 指定的入口（示例为 `lm_ku_entry_exp_v1`），与 04 文档的目标 S0 ABI 不互通。实验版本号必须精确匹配；`struct_size` 至少覆盖本版结构。ABI 变更需重新编译库。
 
-Session 创建时先调用 `prepare_program` 保存独立快照，不接受调用方任意构造的 PreparedProgram 作为已校验凭据。随后通过 `(kernel, implementation)` 匹配显式库路径，用 `dlopen(RTLD_NOW | RTLD_LOCAL)` / `dlsym` 加载实际入口。缺失、重复、未使用的库映射被拒绝。动态库必须声明同步 CPU，未知能力位、异步库、版本不符、缺失符号都会被拒绝。二进制 caps 的名称、实现、入口符号、数值契约、端口数量、参数字节数、workspace 大小/对齐必须与 EntryContract 一致，各端口的对齐声明还须覆盖二进制最低要求。
+Session 创建时先调用 `prepare_program` 保存独立快照，不接受调用方任意构造的 PreparedProgram 作为已校验凭据。随后通过 `(kernel, implementation)` 匹配显式库路径，用 `dlopen(RTLD_NOW | RTLD_LOCAL)` / `dlsym` 加载实际入口。缺失、重复、未使用的库映射被拒绝。动态库必须声明所选 backend 的协议：CPU 为 SYNCHRONOUS，CUDA 为 STREAM_ORDERED；backend/flags 不匹配、未知能力位、版本不符、缺失符号都会被拒绝。二进制 caps 的名称、实现、入口符号、数值契约、端口数量、参数字节数、workspace 大小/对齐必须与 EntryContract 一致，各端口的对齐声明还须覆盖二进制最低要求。
 
 完整 tensor 类型/shape/stride/layout 由已有注册表与图匹配；本版 caps 不重复存储端口 TensorDesc，也不证明库实际满足数值行为。二进制与元数据须配套提供；示例 kernel 还会自行检查可支持的 buffer 描述。动态库在宿主进程内运行，遵守 ABI 的本地代码是此原型的前提。
 
@@ -116,15 +116,17 @@ Buffer 与资源生命周期：
 - `run(inputs)` 按 graph.inputs 顺序接收 BufferView。输入借用到 run 返回，期间调用方不能修改；检查非空存储的非空地址、容量、对齐和地址范围溢出。零存储跨度允许 NULL。不同输入 slot 的存储跨度重叠被拒绝；构造时不同常量 slot 也执行相同检查。
 - 每次 run 为全部内部 slot 独立分配满足对齐的内存，没有 arena、跨次 buffer 复用或生命周期复用。内部存储先清零，避免带 padding 的输出暴露未初始化字节；kernel 仍负责写全所有逻辑输出值。
 - workspace 取所有调用的最大大小和最大对齐，每次 run 分配一次、按串行顺序复用；传给各 kernel 的容量为该入口声明值，内容不保证初始化。参数是只读字节块，不承诺类型对齐，kernel 用 memcpy 读取。
-- 所有输入检查、buffer/workspace 和调用描述分配在执行第一个节点前完成。stream 始终为 NULL，kernel 必须完成全部工作才返回，不得保存传入指针、提交异步任务或跨 ABI 抛异常。
-- RunResult 的 outputs 按图输出顺序保存独立于 Session 生命周期的共享所有权；内部结果直接保留分配，输入/常量直接作为输出时复制存储。重复的输出 ID 共享同一份结果；下次 run 不会覆盖旧结果。
+- 所有输入检查、buffer/workspace 和调用描述分配在执行第一个节点前完成。CPU stream 为 NULL；CUDA launcher 必须把所有工作提交到传入的 stream，公共执行器逐节点等待完成。两者均不得保留宿主描述/params 指针或跨 ABI 抛异常。
+- RunResult 的 outputs 按图输出顺序保存独立于 Session 生命周期的共享所有权；CPU 内部结果直接保留分配，输入/常量直接作为输出时复制存储；CUDA 输出在返回前下载到宿主内存。重复的输出 ID 共享同一份结果；下次 run 不会覆盖旧结果。
 - Session 销毁或构造失败时释放已加载的库与常量；每次调用的中间存储和 scratch 在返回/异常时释放。暂不承诺同一 Session 并发调用安全。
 
-错误通过 `cpu::Error` 抛出，包含错误类别、适用的 node/slot 和原始 kernel status；prepare 失败还保留原始 Diagnostic。kernel 返回 1..255 归为 kernel 错误，其他非零返回值归为协议错误；立即停止后续节点，不返回部分结果，也不回滚已经执行的 kernel 副作用。内存分配失败使用标准 `std::bad_alloc`。
+错误通过 `execution::Error` 抛出（`cpu::Error`、`nv::Error` 是兼容别名），包含错误类别、适用的 node/slot 和原始 kernel status；prepare 失败还保留原始 Diagnostic。kernel 返回 1..255 归为 kernel 错误，其他非零返回值归为协议错误；立即停止后续节点，不返回部分结果，也不回滚已经执行的 kernel 副作用。宿主内存分配失败使用标准 `std::bad_alloc`；CUDA API 错误归为 `ErrorCode::device`，设备执行错误带 node。
+
+公共执行层与 backend 的职责、CUDA 设备资源、stream 收尾和构建命令见 [18 执行器与后端](18-backends.md)。
 
 ## 3 构建与验证
 
-需要支持 C++17 的编译器与 CMake 3.20 或更新版本，不需要 Python、GPU SDK 或联网下载依赖。JSON 解析器 nlohmann/json 3.12.0 及许可证已固定包含在 `third_party/`，只供 `loom_io` 内部使用。
+需要支持 C++17 的编译器与 CMake 3.20 或更新版本，默认与 CPU 构建不需要 Python、GPU SDK 或联网下载依赖；可选 CUDA 构建需要 CUDA Toolkit。JSON 解析器 nlohmann/json 3.12.0 及许可证已固定包含在 `third_party/`，只供 `loom_io` 内部使用。
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -181,7 +183,7 @@ VS Code 打开仓库后，安装工作区推荐的 clangd 和 CMake Tools 扩展
 ## 4 接下来的代码顺序
 
 1. 静态 JSON schema、目录包加载、版本/能力拒绝规则和 CPU 文件执行闭环已实现；后续扩展 SymExpr、variant 与 arena/buffer 复用，逐步验证目标 v1 格式。
-2. 增加真实设备后端、显式 FP32/FP16 转换、混合累加契约及异步所有权验证，然后评审 ABI 冻结。
+2. CPU/CUDA 公共执行闭环已完成（见 [18 执行器与后端](18-backends.md)）；后续增加显式 FP32/FP16 转换、混合累加契约和跨节点异步调度，再评审 ABI 冻结。
 3. session API 完成上述验证后接入可选 Python 绑定；自动精度搜索、量化和高级调度单独扩展。
 
 每一步先完成可验证的调用闭环，再增加范围。首批原型不等于 M0 全部完成。

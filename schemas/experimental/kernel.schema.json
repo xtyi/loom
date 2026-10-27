@@ -11,7 +11,8 @@
       "items": {
         "enum": [
           "static-tensors",
-          "cpu-sync"
+          "cpu-sync",
+          "cuda-stream"
         ]
       }
     },

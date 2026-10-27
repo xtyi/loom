@@ -1,3 +1,13 @@
+if(DEFINED PROBE)
+  execute_process(COMMAND "${PROBE}" resources "${ADD}" "${RELU}" "${CPU_ADD}" "${FIXTURE}" "${PACKAGE}"
+    RESULT_VARIABLE ready)
+  if(ready EQUAL 77)
+    message("SKIP: no CUDA device")
+    return()
+  elseif(NOT ready EQUAL 0)
+    message(FATAL_ERROR "CUDA readiness probe failed")
+  endif()
+endif()
 file(MAKE_DIRECTORY "${OUTPUT}")
 file(REMOVE "${OUTPUT}/0.bin")
 execute_process(COMMAND "${CLI}" run "${PACKAGE}" "${OUTPUT}" "${PACKAGE}/inputs/0.bin"

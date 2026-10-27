@@ -28,6 +28,8 @@ struct TensorData {
 
 struct Package {
   std::string name;
+  std::string backend = "cpu";
+  int compute_capability = 0; // CUDA 包要求精确 SM 匹配；CPU 为 0。
   std::filesystem::path root;
   PlanDocument plan;
   std::vector<plan::EntryContract> entries;

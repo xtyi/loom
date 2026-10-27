@@ -1,6 +1,6 @@
 # 17 实验 JSON plan 与目录包
 
-当前可从目录加载静态执行图、入口契约、动态库路径和权重，并通过现有 CPU Session 执行。
+当前可从目录加载静态执行图、入口契约、动态库路径和权重，并通过公共执行器选择 CPU/CUDA backend 执行。
 本实现采用单独的实验格式，不声称实现 04–06 文档的完整 v1 草案，不冻结兼容性。
 
 ## 1 快速运行
@@ -40,7 +40,7 @@ cpu.loom/
 文件内容包含该 tensor 的完整存储跨度（包括 stride padding）。已有输出文件会被拒绝覆盖。
 可换一个输出目录再次运行。
 
-默认构建也提供 `loom-cli inspect/validate`，但 `run` 要显式开启实验 CPU ABI。
+默认构建也提供 `loom-cli inspect/validate`，但 `run` 要显式开启实验 ABI。
 `inspect/validate` 检查元数据、目标兼容性、引用文件和权重内容大小，不加载或执行动态库，
 也不证明 kernel 的数值行为。只有执行路径才调用现有二进制 caps 检查。
 
@@ -51,8 +51,8 @@ cpu.loom/
 | 文档 | format | 已识别的 required_capabilities |
 |---|---|---|
 | plan | `loom-plan-exp/1` | `static-tensors`、`single-stream` |
-| kernel manifest | `loom-kernel-exp/1` | `static-tensors`、`cpu-sync` |
-| package | `loom-package-exp/1` | `static-tensors`、`single-stream`、`cpu-sync` |
+| kernel manifest | `loom-kernel-exp/1` | `static-tensors`、`cpu-sync` / `cuda-stream` |
+| package | `loom-package-exp/1` | `static-tensors`、`single-stream`、`cpu-sync` / `cuda-stream` |
 
 `required_capabilities` 是可选数组；未知能力拒绝。版本完全匹配，不猜测未来 minor/major
 版本是否兼容。执行字段严格校验，未知字段拒绝；只有根级 `meta` 对象的内容不解释。
@@ -71,7 +71,7 @@ Schema 描述文档结构；不能替代运行时对图依赖、对齐、跨度�
 3. 读取各 manifest，解码 EntryContract，解析包内动态库路径。
 4. 调用 `prepare_program()`，校验完整注册表、所有端口、参数长度和数值契约。
 5. 检查常量映射完整且唯一，按 tensor 的存储跨度读取并对齐保存。
-6. 执行时重新进入 CPU Session：复验元数据、加载二进制、比对 caps、复制权重，再调用 `run()`。
+6. 执行时重新进入公共 Session：复验元数据、加载二进制、比对 caps、复制权重，再调用 `run()`。
 
 失败抛出 `io::Error`，包含 `code/source/field`；原有 program 错误还保留 `Diagnostic`，
 提供适用的 node/slot、expected/actual。没有部分成功的 Package 返回。
@@ -137,16 +137,17 @@ Schema 描述文档结构；不能替代运行时对图依赖、对齐、跨度�
 `workspace_alignment` 缺省 1；其他上面列出的字段必填。
 同一入口可以被多个 node 调用，但包中不允许重复注册或提供完全未使用的入口。
 `EntryBinding.numerical_contract == EntryContract.numerical_contract`，
-CPU 加载时还检查 `EntryContract == binary caps` 的相关声明。
+执行加载时还检查 `EntryContract == binary caps` 的相关声明。
 
 ## 5 Package：把文件组织为运行单元
 
 `package.json` 必填 `format/name/target/plan/kernels/constants`。
 一个 plan、若干 kernel manifest、每个常量 slot 一个原始 `.bin` 文件。
-`target` 必填 `backend/abi/os/arch/endianness/pointer_bits`，其中 backend 只能是 `cpu`，
-abi 只能是 `loom.cpu.exp.v1`，其余必须精确匹配当前宿主。
+`target` 必填 `backend/abi/os/arch/endianness/pointer_bits`，backend 为 `cpu` 时 abi 为 `loom.cpu.exp.v1`；backend 为 `cuda` 时 abi 为 `loom.cuda.exp.v1`，并须填写 `compute_capability`（例如 120）。其余字段必须精确匹配当前宿主。
+
+`compute_capability` 在创建 CUDA Session 时与选定 GPU 精确匹配。CPU 包不得声明该字段。元数据加载不探测 GPU，因此无 CUDA 构建仍可 inspect/validate CUDA 包；真正运行时必须启用 CUDA backend。`required_capabilities` 的 `cpu-sync` / `cuda-stream` 必须与包目标一致，kernel manifest 也执行相同检查。
 已识别 arch 为 `x86_64/aarch64/x86/arm`，os 为 `linux/macos/windows`；
-CPU 执行仍受现有 POSIX 限制。
+CPU/CUDA 动态库加载仍受现有 POSIX 限制。CUDA 示例包、构建和调用见 [18 执行器与后端](18-backends.md)。
 
 所有 manifest 中的路径也相对于包根目录，禁止绝对路径、`..`、反斜杠和冒号。
 解析符号链接后仍须位于包内且为普通文件。常量文件大小必须恰好等于 slot 的 `span_bytes`，

@@ -3,14 +3,16 @@
 
 #include <stdint.h>
 
-/* S2 experimental CPU ABI, NOT the draft lm_ku_*_v1 ABI.
+/* S2 experimental backend ABI, NOT the draft lm_ku_*_v1 ABI.
  * Opt in with -DLOOM_ENABLE_EXPERIMENTAL_ABI=ON when building Loom.
  * Same native architecture/calling convention required; no packed structs.
  * Version must match exactly. Changes require rebuilding the KernelUnits. */
 #define LM_EXP_ABI_VERSION 1u
 #define LM_EXP_MAX_DIMS 8u
 #define LM_EXP_BACKEND_CPU 1u
+#define LM_EXP_BACKEND_CUDA 2u
 #define LM_EXP_SYNCHRONOUS 1u
+#define LM_EXP_STREAM_ORDERED 2u
 #define LM_EXP_READ 1u
 #define LM_EXP_WRITE 2u
 
@@ -64,7 +66,7 @@ typedef struct LmExpCaps {
   uint32_t struct_size;
   uint32_t abi_version;
   uint32_t backend;
-  uint32_t flags;              /* Exactly LM_EXP_SYNCHRONOUS in this revision. */
+  uint32_t flags;              /* CPU: SYNCHRONOUS; CUDA: STREAM_ORDERED. */
   const char* kernel;
   const char* implementation;
   const char* entry_symbol;
@@ -77,8 +79,13 @@ typedef struct LmExpCaps {
   uint64_t min_buffer_alignment;
 } LmExpCaps;
 
-/* All pointers borrowed until return only. stream must be NULL. Return only
- * after all work completes. No exceptions, retained pointers or async work.
+/* CPU: stream must be NULL; return only after all work completes.
+ * CUDA: stream is the runtime-owned cudaStream_t (non-NULL). Tensor data and
+ * workspace are device pointers. Enqueue ALL work on this stream; do not retain
+ * host descriptors/params or destroy the stream. Device buffers live until the
+ * runtime synchronizes the stream, including when entry returns an error.
+ * Descriptors/params are host pointers, borrowed until entry returns only.
+ * Neither backend may throw exceptions across the ABI.
  * 0 = success; 1..255 = kernel error; other returns violate this ABI.
  * data may be NULL only for a zero storage span; do not dereference it then.
  * Caps and their NUL-terminated strings live until the library is unloaded. */

@@ -12,7 +12,8 @@
         "enum": [
           "static-tensors",
           "single-stream",
-          "cpu-sync"
+          "cpu-sync",
+          "cuda-stream"
         ]
       }
     },
@@ -28,10 +29,16 @@
       "type": "object",
       "properties": {
         "backend": {
-          "const": "cpu"
+          "enum": [
+            "cpu",
+            "cuda"
+          ]
         },
         "abi": {
-          "const": "loom.cpu.exp.v1"
+          "enum": [
+            "loom.cpu.exp.v1",
+            "loom.cuda.exp.v1"
+          ]
         },
         "os": {
           "enum": [
@@ -59,6 +66,11 @@
             32,
             64
           ]
+        },
+        "compute_capability": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 999
         }
       },
       "required": [
@@ -69,7 +81,37 @@
         "endianness",
         "pointer_bits"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "backend": {
+              "const": "cpu"
+            },
+            "abi": {
+              "const": "loom.cpu.exp.v1"
+            }
+          },
+          "not": {
+            "required": [
+              "compute_capability"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "backend": {
+              "const": "cuda"
+            },
+            "abi": {
+              "const": "loom.cuda.exp.v1"
+            }
+          },
+          "required": [
+            "compute_capability"
+          ]
+        }
+      ]
     },
     "plan": {
       "type": "string",
@@ -116,5 +158,59 @@
     "kernels",
     "constants"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "target": {
+            "properties": {
+              "backend": {
+                "const": "cpu"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "required_capabilities": {
+            "items": {
+              "enum": [
+                "static-tensors",
+                "single-stream",
+                "cpu-sync"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "target": {
+            "properties": {
+              "backend": {
+                "const": "cuda"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "required_capabilities": {
+            "items": {
+              "enum": [
+                "static-tensors",
+                "single-stream",
+                "cuda-stream"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

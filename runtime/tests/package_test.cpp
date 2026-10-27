@@ -96,6 +96,33 @@ const std::map<std::string, std::function<void()>> cases{
     change(f.root/"package.json", [](json& j) { j["target"]["pointer_bits"] = 1; });
     rejects(ErrorCode::target, [&] { load_package(f.root); });
   }},
+  {"cuda_target", [] {
+    Fixture f;
+    change(f.root/"package.json", [](json& j) {
+      j["target"]["backend"] = "cuda";
+      j["target"]["abi"] = "loom.cuda.exp.v1";
+      j["target"]["compute_capability"] = 120;
+      j["required_capabilities"] = {"cuda-stream"};
+    });
+    auto p = load_package(f.root); // 纯元数据加载不要求 CUDA toolkit 或设备。
+    require(p.backend == "cuda" && p.compute_capability == 120, "CUDA target lost");
+    const auto saved = read(f.root/"package.json");
+    change(f.root/"package.json", [](json& j) { j["required_capabilities"] = {"cpu-sync"}; });
+    rejects(ErrorCode::capability, [&] { load_package(f.root); });
+    write(f.root/"package.json", saved.dump());
+    change(f.root/"kernels/id.json", [](json& j) { j["required_capabilities"] = {"cpu-sync"}; });
+    rejects(ErrorCode::capability, [&] { load_package(f.root); });
+    change(f.root/"kernels/id.json", [](json& j) { j.erase("required_capabilities"); });
+    for (const auto& edit : std::vector<std::function<void(json&)>>{
+      [](json& j) { j["target"].erase("compute_capability"); },
+      [](json& j) { j["target"]["compute_capability"] = 0; },
+      [](json& j) { j["target"]["abi"] = "loom.cpu.exp.v1"; },
+      [](json& j) { j["target"]["backend"] = "cpu"; j["target"]["abi"] = "loom.cpu.exp.v1"; }
+    }) {
+      auto j = saved; edit(j); write(f.root/"package.json", j.dump());
+      rejects(ErrorCode::target, [&] { load_package(f.root); });
+    }
+  }},
   {"paths", [] {
     Fixture f;
     const auto saved = read(f.root/"package.json");

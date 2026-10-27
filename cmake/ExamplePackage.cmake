@@ -26,14 +26,26 @@ elseif(LOOM_PACKAGE_ARCH MATCHES "^arm")
   set(LOOM_PACKAGE_ARCH arm)
 endif()
 math(EXPR LOOM_PACKAGE_POINTER_BITS "${CMAKE_SIZEOF_VOID_P} * 8")
+# 两种 backend 共用相同的图/契约/数据模板，只替换目标和库名称。
+function(loom_example_package backend kernel_prefix directory target sm)
+  set(LOOM_PACKAGE_BACKEND "${backend}")
+  set(LOOM_PACKAGE_KERNEL_PREFIX "${kernel_prefix}")
+  if(backend STREQUAL "cuda")
+    set(LOOM_PACKAGE_EXECUTION cuda-stream)
+    set(LOOM_PACKAGE_DEVICE_TARGET ", \"compute_capability\": ${sm}")
+  else()
+    set(LOOM_PACKAGE_EXECUTION cpu-sync)
+    set(LOOM_PACKAGE_DEVICE_TARGET "")
+  endif()
+  foreach(document IN ITEMS package.json plans/main.json kernels/add/ku.json kernels/relu_scale/ku.json)
+    configure_file("examples/packages/cpu/${document}.in" "${directory}/${document}" @ONLY)
+  endforeach()
+  configure_file("examples/packages/cpu/data/bias.${LOOM_PACKAGE_ENDIAN}.bin" "${directory}/weights/bias.bin" COPYONLY)
+  configure_file("examples/packages/cpu/data/input.${LOOM_PACKAGE_ENDIAN}.bin" "${directory}/inputs/0.bin" COPYONLY)
+  add_custom_target(${target} ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${kernel_prefix}-add>" "${directory}/kernels/add/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${kernel_prefix}-relu>" "${directory}/kernels/relu_scale/"
+    DEPENDS ${kernel_prefix}-add ${kernel_prefix}-relu VERBATIM)
+endfunction()
 set(LOOM_EXAMPLE_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/examples/cpu.loom")
-foreach(document IN ITEMS package.json plans/main.json kernels/add/ku.json kernels/relu_scale/ku.json)
-  configure_file("examples/packages/cpu/${document}.in" "${LOOM_EXAMPLE_PACKAGE}/${document}" @ONLY)
-endforeach()
-configure_file("examples/packages/cpu/data/bias.${LOOM_PACKAGE_ENDIAN}.bin" "${LOOM_EXAMPLE_PACKAGE}/weights/bias.bin" COPYONLY)
-configure_file("examples/packages/cpu/data/input.${LOOM_PACKAGE_ENDIAN}.bin" "${LOOM_EXAMPLE_PACKAGE}/inputs/0.bin" COPYONLY)
-add_custom_target(loom-example-package ALL
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:loom-example-add>" "${LOOM_EXAMPLE_PACKAGE}/kernels/add/"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:loom-example-relu>" "${LOOM_EXAMPLE_PACKAGE}/kernels/relu_scale/"
-  DEPENDS loom-example-add loom-example-relu
-  VERBATIM)
+loom_example_package(cpu loom-example "${LOOM_EXAMPLE_PACKAGE}" loom-example-package "")
