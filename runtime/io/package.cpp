@@ -1,5 +1,4 @@
 #include "io/package.h"
-#include "io/json_internal.h"
 
 #include <algorithm>
 #include <fstream>
@@ -7,16 +6,19 @@
 #include <new>
 #include <set>
 
+#include "io/json_internal.h"
+
 namespace loom::io {
 namespace fs = std::filesystem;
 namespace {
 using detail::Json;
 using detail::Reader;
 using Key = std::pair<std::string, std::string>;
+
 Key key(const plan::EntryRef& ref) { return {ref.kernel, ref.implementation}; }
 
-fs::path member(const fs::path& root, const std::string& name,
-                const Reader& r, const std::string& field) {
+fs::path member(const fs::path& root, const std::string& name, const Reader& r,
+                const std::string& field) {
   const fs::path relative(name);
   // Paths in every document are relative to the package root, not the manifest.
   if (relative.empty() || relative.is_absolute() || relative.has_root_name() ||
@@ -31,7 +33,8 @@ fs::path member(const fs::path& root, const std::string& name,
   if (ec) r.fail(ErrorCode::io, field, "cannot resolve " + name + ": " + ec.message());
   auto base = root.begin();
   auto child = path.begin();
-  for (; base != root.end() && child != path.end() && *base == *child; ++base, ++child) {}
+  for (; base != root.end() && child != path.end() && *base == *child; ++base, ++child) {
+  }
   if (base != root.end() || child == path.end()) {
     r.fail(ErrorCode::path, field, "path/symlink escapes package directory: " + name);
   }
@@ -41,15 +44,21 @@ fs::path member(const fs::path& root, const std::string& name,
   return path;
 }
 
-void target(const Json& j, const Reader& r, Package& out) {
-  r.object(j, "$.target", {"backend", "abi", "os", "arch", "endianness", "pointer_bits"}, {"compute_capability"});
+// Validate package target metadata against the host and store backend requirements in out.
+// CUDA compute capability is decoded here; actual device compatibility is checked by Session.
+void parse_and_validate_package_target(const Json& j, const Reader& r, Package& out) {
+  r.validate_object_fields(j, "$.target",
+                           {"backend", "abi", "os", "arch", "endianness", "pointer_bits"},
+                           {"compute_capability"});
   const auto host = host_target();
   if (host.os == "unknown" || host.arch == "unknown") {
-    r.fail(ErrorCode::target, "$.target", "this host target is not supported by the experimental format");
+    r.fail(ErrorCode::target, "$.target",
+           "this host target is not supported by the experimental format");
   }
   const auto equal = [&](const char* field, const std::string& wanted) {
     const auto path = std::string("$.target.") + field;
-    if (r.string(j.at(field), path) != wanted) r.fail(ErrorCode::target, path, "requires " + wanted);
+    if (r.string(j.at(field), path) != wanted)
+      r.fail(ErrorCode::target, path, "requires " + wanted);
   };
   out.backend = r.string(j.at("backend"), "$.target.backend");
   if (out.backend != "cpu" && out.backend != "cuda") {
@@ -58,12 +67,16 @@ void target(const Json& j, const Reader& r, Package& out) {
   equal("abi", out.backend == "cpu" ? "loom.cpu.exp.v1" : "loom.cuda.exp.v1");
   if (out.backend == "cuda") {
     if (!j.contains("compute_capability")) {
-      r.fail(ErrorCode::target, "$.target.compute_capability", "CUDA target requires an explicit SM version");
+      r.fail(ErrorCode::target, "$.target.compute_capability",
+             "CUDA target requires an explicit SM version");
     }
-    out.compute_capability = static_cast<int>(r.uint(j.at("compute_capability"), "$.target.compute_capability", 999));
-    if (out.compute_capability < 10) r.fail(ErrorCode::target, "$.target.compute_capability", "invalid SM version");
+    out.compute_capability =
+        static_cast<int>(r.uint(j.at("compute_capability"), "$.target.compute_capability", 999));
+    if (out.compute_capability < 10)
+      r.fail(ErrorCode::target, "$.target.compute_capability", "invalid SM version");
   } else if (j.contains("compute_capability")) {
-    r.fail(ErrorCode::target, "$.target.compute_capability", "CPU target cannot require a GPU architecture");
+    r.fail(ErrorCode::target, "$.target.compute_capability",
+           "CPU target cannot require a GPU architecture");
   }
   equal("os", host.os);
   equal("arch", host.arch);
@@ -72,7 +85,7 @@ void target(const Json& j, const Reader& r, Package& out) {
     r.fail(ErrorCode::target, "$.target.pointer_bits", "native pointer width mismatch");
   }
 }
-} // namespace
+}  // namespace
 
 Target host_target() {
   Target t;
@@ -107,13 +120,17 @@ TensorData load_tensor(const fs::path& path, const plan::TensorInfo& info) {
   std::error_code ec;
   const auto bytes = fs::file_size(path, ec);
   if (ec) r.fail(ErrorCode::io, "$", "cannot stat tensor file: " + ec.message());
-  if (bytes != info.span_bytes) r.fail(ErrorCode::binding, "$", "tensor file size must equal storage span " + std::to_string(info.span_bytes));
+  if (bytes != info.span_bytes)
+    r.fail(ErrorCode::binding, "$",
+           "tensor file size must equal storage span " + std::to_string(info.span_bytes));
   if (bytes > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
     r.fail(ErrorCode::binding, "$", "tensor file exceeds supported stream size");
   }
   const auto alignment = std::max(info.desc.alignment, alignof(std::max_align_t));
-  void* raw = bytes ? ::operator new(static_cast<std::size_t>(bytes), std::align_val_t(alignment)) : nullptr;
-  std::shared_ptr<void> data(raw, [alignment](void* p) { ::operator delete(p, std::align_val_t(alignment)); });
+  void* raw = bytes ? ::operator new(static_cast<std::size_t>(bytes), std::align_val_t(alignment))
+                    : nullptr;
+  std::shared_ptr<void> data(
+      raw, [alignment](void* p) { ::operator delete(p, std::align_val_t(alignment)); });
   std::ifstream in(path, std::ios::binary);
   if (!in || (bytes && !in.read(static_cast<char*>(raw), static_cast<std::streamsize>(bytes))) ||
       in.peek() != std::char_traits<char>::eof()) {
@@ -123,61 +140,104 @@ TensorData load_tensor(const fs::path& path, const plan::TensorInfo& info) {
 }
 
 Package load_package(const fs::path& directory) {
+  // Resolve the package root once so every member uses the same canonical base.
   std::error_code ec;
   const auto root = fs::canonical(directory, ec);
-  if (ec || !fs::is_directory(root)) throw Error(ErrorCode::io, directory.string(), "$", "expected package directory");
+  if (ec || !fs::is_directory(root))
+    throw Error(ErrorCode::io, directory.string(), "$", "expected package directory");
+
+  // Locate the main manifest and ensure its resolved path is a regular file inside the package.
   const auto manifest = member(root, "package.json", Reader{directory.string()}, "$");
+
+  // Parse the manifest with its filename as the source of subsequent diagnostics.
   const Reader r{manifest.string()};
   const auto j = detail::parse(detail::read_text(manifest), r);
-  r.header(j, package_format, {"static-tensors", "single-stream", "cpu-sync", "cuda-stream"});
-  r.object(j, "$", {"format", "name", "target", "plan", "kernels", "constants"}, {"required_capabilities", "meta"});
+
+  // Check the format and known capabilities before the execution backend is known.
+  r.validate_format_and_capabilities(
+      j, package_format, {"static-tensors", "single-stream", "cpu-sync", "cuda-stream"});
+
+  // Require mandatory package fields and reject keys outside the required and optional lists.
+  r.validate_object_fields(j, "$", {"format", "name", "target", "plan", "kernels", "constants"},
+                           {"required_capabilities", "meta"});
+
+  // Validate target metadata against the host and select the execution capability.
+  // The actual CUDA device is checked later when a Session is created.
   Package out;
-  target(j.at("target"), r, out); // 只校验元数据；真实设备在创建 Session 时检查。
+  parse_and_validate_package_target(j.at("target"), r, out);
   const auto execution_capability = out.backend == "cpu" ? "cpu-sync" : "cuda-stream";
-  r.header(j, package_format, {"static-tensors", "single-stream", execution_capability});
+
+  // Recheck required capabilities with only the selected backend's execution mode allowed.
+  r.validate_format_and_capabilities(j, package_format,
+                                     {"static-tensors", "single-stream", execution_capability});
+
+  // Store package identity and load the graph, tensor descriptions, and optional schedule.
   out.root = root;
   out.name = r.string(j.at("name"), "$.name");
   const auto plan_path = member(root, r.string(j.at("plan"), "$.plan"), r, "$.plan");
   out.plan = load_plan(plan_path);
+
+  // Load each kernel manifest, check backend capabilities, and decode its entry contract.
   const auto& kernels = r.array(j.at("kernels"), "$.kernels");
   for (std::size_t i = 0; i < kernels.size(); ++i) {
     const auto field = "$.kernels[" + std::to_string(i) + "]";
     const auto path = member(root, r.string(kernels[i], field), r, field);
     const Reader kr{path.string()};
     const auto kernel = detail::parse(detail::read_text(path), kr);
-    kr.header(kernel, kernel_format, {"static-tensors", execution_capability});
+    kr.validate_format_and_capabilities(kernel, kernel_format,
+                                        {"static-tensors", execution_capability});
     auto contract = detail::entry(kernel, kr);
-    out.libraries.push_back({contract.ref, member(root, kr.string(kernel.at("library"), "$.library"), kr, "$.library")});
+    // Library paths are relative to the package root; record them without loading any code.
+    out.libraries.push_back(
+        {contract.ref,
+         member(root, kr.string(kernel.at("library"), "$.library"), kr, "$.library")});
     out.entries.push_back(std::move(contract));
   }
+
+  // Validate graph topology, tensor metadata, entry bindings, and execution order together.
+  // Keep the prepared metadata snapshot for inspection; this does not execute kernels.
   auto result = plan::prepare_program(out.plan.graph, out.entries, out.plan.order);
   if (!result.ok()) detail::program_error(Reader{plan_path.string()}, *result.error);
   out.program = std::move(*result.value);
+
+  // Reject kernel manifests whose entries are never referenced by the prepared calls.
   std::set<Key> used;
   for (const auto& call : out.program.calls) used.insert(key(call.entry.ref));
   for (const auto& library : out.libraries) {
-    if (!used.count(key(library.ref))) r.fail(ErrorCode::binding, "$.kernels", "unused kernel manifest");
+    if (!used.count(key(library.ref)))
+      r.fail(ErrorCode::binding, "$.kernels", "unused kernel manifest");
   }
+
+  // External slots supplied as graph inputs come from the caller; all others need constants.
   const std::set<plan::SlotId> inputs(out.program.inputs.begin(), out.program.inputs.end());
   std::set<plan::SlotId> wanted;
   for (const auto& [id, tensor] : out.program.tensors) {
     if (tensor.external && !inputs.count(id)) wanted.insert(id);
   }
+
+  // Validate the full constant binding table before allocating or reading any tensor data.
+  // Each required slot must appear exactly once and refer to a regular file inside the package.
   const auto& constants = r.array(j.at("constants"), "$.constants");
-  // First validate the entire binding table, then allocate/read any weight data.
   std::map<plan::SlotId, fs::path> files;
   for (std::size_t i = 0; i < constants.size(); ++i) {
     const auto field = "$.constants[" + std::to_string(i) + "]";
     const auto& constant = constants[i];
-    r.object(constant, field, {"slot", "file"});
-    const auto id = static_cast<plan::SlotId>(r.uint(constant.at("slot"), field + ".slot", UINT32_MAX));
-    if (!wanted.count(id) || files.count(id)) r.fail(ErrorCode::binding, field + ".slot", "unexpected or duplicate constant slot");
-    files.emplace(id, member(root, r.string(constant.at("file"), field + ".file"), r, field + ".file"));
+    r.validate_object_fields(constant, field, {"slot", "file"});
+    const auto id =
+        static_cast<plan::SlotId>(r.uint(constant.at("slot"), field + ".slot", UINT32_MAX));
+    if (!wanted.count(id) || files.count(id))
+      r.fail(ErrorCode::binding, field + ".slot", "unexpected or duplicate constant slot");
+    files.emplace(id,
+                  member(root, r.string(constant.at("file"), field + ".file"), r, field + ".file"));
   }
-  if (files.size() != wanted.size()) r.fail(ErrorCode::binding, "$.constants", "must cover every non-input external slot exactly once");
+  if (files.size() != wanted.size())
+    r.fail(ErrorCode::binding, "$.constants",
+           "must cover every non-input external slot exactly once");
+
+  // Read constants into owned, aligned storage and require each file to match its tensor span.
   for (const auto& [id, file] : files) {
     out.constants.emplace(id, load_tensor(file, out.program.tensors.at(id).info));
   }
   return out;
 }
-} // namespace loom::io
+}  // namespace loom::io

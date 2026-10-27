@@ -101,6 +101,25 @@ docs/
 
 ONNX 模型接入实验使用 [loom-build-onnx 技能](skills/loom-build-onnx/SKILL.md)：默认选择 ResNet-18 FP32，由离线 Agent 编写模型专用构建脚本和 kernel，生成权重、JSON plan 与目录包，并以独立 ONNX Runtime 结果验收。技能附带锁定模型来源、接口说明及参考/比较工具；完整 ResNet-18 执行包尚未实现。
 
+### 代码格式与提交钩子
+
+C/C++ 和 CUDA 代码使用根目录的 [`.clang-format`](.clang-format)：Google 风格、2 空格缩进、100 列上限。clangd 也会读取这份配置。
+
+首次克隆后安装并启用提交钩子（需要 [uv](https://docs.astral.sh/uv/)）：
+
+```sh
+uv tool install pre-commit
+pre-commit install --install-hooks
+```
+
+每次 `git commit` 前，钩子会使用固定版本的 `clang-format 21.1.8` 自动格式化暂存的 C/C++ 和 CUDA 文件，跳过 `third_party/`。工具由 pre-commit 自动安装，无需另装系统级 clang-format。如果格式化修改了文件，本次提交会中止；检查修改后，重新 `git add` 对应文件并提交。
+
+需要手动格式化整个项目时运行：
+
+```sh
+pre-commit run clang-format --all-files
+```
+
 下一步是 11 文档中的验证期，约三到四周，先弄清这条路在哪里走不通，再决定是否投入半年：
 
 - E1：做一个语义无关的执行器加手写融合 kernel，看声明负担是否可接受

@@ -1,43 +1,45 @@
-#include "io/json_internal.h"
-
 #include <algorithm>
 #include <fstream>
 #include <limits>
 #include <set>
 
+#include "io/json_internal.h"
+
 namespace loom::io {
 
 Error::Error(ErrorCode c, std::string s, std::string f, std::string message)
-    : std::runtime_error(s + ": " + f + ": " + message), code(c),
-      source(std::move(s)), field(std::move(f)) {}
+    : std::runtime_error(s + ": " + f + ": " + message),
+      code(c),
+      source(std::move(s)),
+      field(std::move(f)) {}
 
 namespace detail {
 namespace {
 constexpr std::size_t max_json_bytes = 16 * 1024 * 1024;
-constexpr auto max_extent = static_cast<std::uint64_t>(
-    std::numeric_limits<std::int64_t>::max());
+constexpr auto max_extent = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
 std::size_t size(const Reader& r, const Json& j, const std::string& field) {
-  return static_cast<std::size_t>(r.uint(j, field,
-      std::min<std::uint64_t>(max_extent, std::numeric_limits<std::size_t>::max())));
+  return static_cast<std::size_t>(r.uint(
+      j, field, std::min<std::uint64_t>(max_extent, std::numeric_limits<std::size_t>::max())));
 }
-} // namespace
+}  // namespace
 
 [[noreturn]] void Reader::fail(ErrorCode code, const std::string& field,
                                const std::string& message) const {
   throw Error(code, source, field, message);
 }
 
-void Reader::object(const Json& j, const std::string& field,
-                    std::initializer_list<const char*> required,
-                    std::initializer_list<const char*> optional) const {
+void Reader::validate_object_fields(const Json& j, const std::string& field,
+                                    std::initializer_list<const char*> required,
+                                    std::initializer_list<const char*> optional) const {
   if (!j.is_object()) fail(ErrorCode::schema, field, "expected object");
   for (const auto* key : required) {
     if (!j.contains(key)) fail(ErrorCode::schema, field + "." + key, "required field missing");
   }
   for (auto it = j.begin(); it != j.end(); ++it) {
     const auto known = [&](const auto& keys) {
-      return std::any_of(keys.begin(), keys.end(), [&](const char* key) { return it.key() == key; });
+      return std::any_of(keys.begin(), keys.end(),
+                         [&](const char* key) { return it.key() == key; });
     };
     if (!known(required) && !known(optional)) {
       fail(ErrorCode::schema, field + "." + it.key(), "unknown/unsupported field");
@@ -60,8 +62,7 @@ std::string Reader::string(const Json& j, const std::string& field) const {
 }
 
 std::uint64_t Reader::uint(const Json& j, const std::string& field, std::uint64_t max) const {
-  if (!j.is_number_integer() ||
-      (!j.is_number_unsigned() && j.get<std::int64_t>() < 0)) {
+  if (!j.is_number_integer() || (!j.is_number_unsigned() && j.get<std::int64_t>() < 0)) {
     fail(ErrorCode::schema, field, "expected nonnegative integer (no float or boolean)");
   }
   const auto value = j.get<std::uint64_t>();
@@ -74,8 +75,8 @@ bool Reader::boolean(const Json& j, const std::string& field) const {
   return j.get<bool>();
 }
 
-void Reader::header(const Json& j, const char* format,
-                    std::initializer_list<const char*> capabilities) const {
+void Reader::validate_format_and_capabilities(
+    const Json& j, const char* format, std::initializer_list<const char*> capabilities) const {
   if (!j.is_object() || !j.contains("format")) {
     fail(ErrorCode::schema, "$.format", "required format missing");
   }
@@ -136,8 +137,8 @@ std::vector<std::uint32_t> Reader::ids(const Json& j, const std::string& field) 
   array(j, field);
   std::vector<std::uint32_t> out;
   for (std::size_t i = 0; i < j.size(); ++i) {
-    out.push_back(static_cast<std::uint32_t>(uint(j[i], field + "[" + std::to_string(i) + "]",
-                                                UINT32_MAX)));
+    out.push_back(
+        static_cast<std::uint32_t>(uint(j[i], field + "[" + std::to_string(i) + "]", UINT32_MAX)));
   }
   return out;
 }
@@ -148,12 +149,12 @@ plan::EntryRef Reader::ref(const Json& j, const std::string& field) const {
 }
 
 plan::TensorDesc Reader::tensor(const Json& j, const std::string& field) const {
-  object(j, field, {"dtype", "shape"}, {"strides", "layout", "alignment"});
+  validate_object_fields(j, field, {"dtype", "shape"}, {"strides", "layout", "alignment"});
   plan::TensorDesc out;
   const auto name = string(j.at("dtype"), field + ".dtype");
-  for (auto dtype : {plan::DType::f16, plan::DType::bf16, plan::DType::f32, plan::DType::f64,
-                     plan::DType::i8, plan::DType::u8, plan::DType::i32, plan::DType::i64,
-                     plan::DType::boolean}) {
+  for (auto dtype :
+       {plan::DType::f16, plan::DType::bf16, plan::DType::f32, plan::DType::f64, plan::DType::i8,
+        plan::DType::u8, plan::DType::i32, plan::DType::i64, plan::DType::boolean}) {
     if (name == plan::dtype_name(dtype)) out.dtype = dtype;
   }
   const auto dims = [&](const Json& values, const std::string& path) {
@@ -161,17 +162,19 @@ plan::TensorDesc Reader::tensor(const Json& j, const std::string& field) const {
     if (values.size() > 8) fail(ErrorCode::schema, path, "rank exceeds 8");
     std::vector<std::int64_t> result;
     for (std::size_t i = 0; i < values.size(); ++i) {
-      result.push_back(static_cast<std::int64_t>(uint(values[i], path + "[" + std::to_string(i) + "]",
-                                                     max_extent)));
+      result.push_back(static_cast<std::int64_t>(
+          uint(values[i], path + "[" + std::to_string(i) + "]", max_extent)));
     }
     return result;
   };
   out.shape = dims(j.at("shape"), field + ".shape");
   if (j.contains("strides")) out.strides = dims(j.at("strides"), field + ".strides");
-  if (j.contains("layout")) out.layout = static_cast<std::uint32_t>(uint(j.at("layout"), field + ".layout", UINT32_MAX));
+  if (j.contains("layout"))
+    out.layout = static_cast<std::uint32_t>(uint(j.at("layout"), field + ".layout", UINT32_MAX));
   if (j.contains("alignment")) out.alignment = size(*this, j.at("alignment"), field + ".alignment");
   auto validated = plan::validate_tensor(out);
-  if (!validated.ok()) fail(ErrorCode::schema, field + "." + validated.error->field, validated.error->message);
+  if (!validated.ok())
+    fail(ErrorCode::schema, field + "." + validated.error->field, validated.error->message);
   return validated.value->desc;
 }
 
@@ -181,17 +184,21 @@ void program_error(const Reader& r, const plan::Diagnostic& diagnostic) {
   if (diagnostic.slot) context += " slot=" + std::to_string(*diagnostic.slot);
   if (!diagnostic.expected.empty()) context += " expected=" + diagnostic.expected;
   if (!diagnostic.actual.empty()) context += " actual=" + diagnostic.actual;
-  Error error(ErrorCode::program, r.source, diagnostic.field.empty() ? "$" : "$." + diagnostic.field,
+  Error error(ErrorCode::program, r.source,
+              diagnostic.field.empty() ? "$" : "$." + diagnostic.field,
               diagnostic.message + context);
   error.diagnostic = diagnostic;
   throw error;
 }
 
 plan::EntryContract entry(const Json& j, const Reader& r) {
-  r.header(j, kernel_format, {"static-tensors", "cpu-sync", "cuda-stream"});
-  r.object(j, "$", {"format", "kernel", "implementation", "symbol", "inputs", "outputs",
-                     "numerical_contract", "library"},
-                    {"params_bytes", "workspace_bytes", "workspace_alignment", "required_capabilities", "meta"});
+  r.validate_format_and_capabilities(j, kernel_format,
+                                     {"static-tensors", "cpu-sync", "cuda-stream"});
+  r.validate_object_fields(
+      j, "$",
+      {"format", "kernel", "implementation", "symbol", "inputs", "outputs", "numerical_contract",
+       "library"},
+      {"params_bytes", "workspace_bytes", "workspace_alignment", "required_capabilities", "meta"});
   plan::EntryContract out;
   out.ref = r.ref(j, "$");
   out.symbol = r.string(j.at("symbol"), "$.symbol");
@@ -202,7 +209,7 @@ plan::EntryContract entry(const Json& j, const Reader& r) {
     std::vector<plan::PortContract> result;
     for (std::size_t i = 0; i < values.size(); ++i) {
       const auto field = path + "[" + std::to_string(i) + "]";
-      r.object(values[i], field, {"name", "tensor"});
+      r.validate_object_fields(values[i], field, {"name", "tensor"});
       result.push_back({r.string(values[i].at("name"), field + ".name"),
                         r.tensor(values[i].at("tensor"), field + ".tensor")});
     }
@@ -210,47 +217,69 @@ plan::EntryContract entry(const Json& j, const Reader& r) {
   };
   out.inputs = ports("inputs");
   out.outputs = ports("outputs");
-  if (j.contains("params_bytes")) out.params_bytes = size(r, j.at("params_bytes"), "$.params_bytes");
-  if (j.contains("workspace_bytes")) out.workspace_bytes = size(r, j.at("workspace_bytes"), "$.workspace_bytes");
-  if (j.contains("workspace_alignment")) out.workspace_alignment = size(r, j.at("workspace_alignment"), "$.workspace_alignment");
+  if (j.contains("params_bytes"))
+    out.params_bytes = size(r, j.at("params_bytes"), "$.params_bytes");
+  if (j.contains("workspace_bytes"))
+    out.workspace_bytes = size(r, j.at("workspace_bytes"), "$.workspace_bytes");
+  if (j.contains("workspace_alignment"))
+    out.workspace_alignment = size(r, j.at("workspace_alignment"), "$.workspace_alignment");
   const auto checked = plan::prepare_program(plan::Graph{}, {out});
   if (!checked.ok()) program_error(r, *checked.error);
   return out;
 }
-} // namespace detail
+}  // namespace detail
 
 PlanDocument parse_plan(std::string_view text, const std::string& source) {
+  // Parse JSON text and attach the source label to syntax and validation errors.
   const detail::Reader r{source};
   const auto j = detail::parse(text, r);
-  r.header(j, plan_format, {"static-tensors", "single-stream"});
-  r.object(j, "$", {"format", "slots", "nodes", "inputs", "outputs"},
-                    {"schedule", "required_capabilities", "meta"});
+
+  // Check the plan format, supported capabilities, and allowed top-level fields.
+  r.validate_format_and_capabilities(j, plan_format, {"static-tensors", "single-stream"});
+  r.validate_object_fields(j, "$", {"format", "slots", "nodes", "inputs", "outputs"},
+                           {"schedule", "required_capabilities", "meta"});
   PlanDocument out;
+
+  // Decode logical tensor slots; tensor() validates and normalizes each descriptor.
+  // Slots describe storage requirements but do not allocate tensor buffers.
   const auto& slots = r.array(j.at("slots"), "$.slots");
   for (std::size_t i = 0; i < slots.size(); ++i) {
+    // Keep the JSON array position in diagnostics, independently of the slot ID.
     const auto field = "$.slots[" + std::to_string(i) + "]";
     const auto& slot = slots[i];
-    r.object(slot, field, {"id", "external", "tensor"});
+    r.validate_object_fields(slot, field, {"id", "external", "tensor"});
     // Persisted IDs must survive file ordering and sparse IDs; do not auto-allocate.
-    out.graph.slots.push_back({static_cast<plan::SlotId>(r.uint(slot.at("id"), field + ".id", UINT32_MAX)),
-                              r.boolean(slot.at("external"), field + ".external"),
-                              r.tensor(slot.at("tensor"), field + ".tensor")});
+    out.graph.slots.push_back(
+        {static_cast<plan::SlotId>(r.uint(slot.at("id"), field + ".id", UINT32_MAX)),
+         r.boolean(slot.at("external"), field + ".external"),
+         r.tensor(slot.at("tensor"), field + ".tensor")});
   }
+
+  // Decode nodes with ordered input/output slot IDs and optional predecessor node IDs.
+  // The after list adds ordering constraints beyond dependencies implied by tensor dataflow.
   const auto& nodes = r.array(j.at("nodes"), "$.nodes");
   for (std::size_t i = 0; i < nodes.size(); ++i) {
     const auto field = "$.nodes[" + std::to_string(i) + "]";
     const auto& node = nodes[i];
-    r.object(node, field, {"id", "inputs", "outputs", "binding"}, {"after"});
+    r.validate_object_fields(node, field, {"id", "inputs", "outputs", "binding"}, {"after"});
     plan::Node n;
     n.id = static_cast<plan::NodeId>(r.uint(node.at("id"), field + ".id", UINT32_MAX));
     n.inputs = r.ids(node.at("inputs"), field + ".inputs");
     n.outputs = r.ids(node.at("outputs"), field + ".outputs");
     if (node.contains("after")) n.after = r.ids(node.at("after"), field + ".after");
+
+    // Record the requested kernel implementation and numerical contract identifier.
+    // Matching this binding to an actual entry contract happens in prepare_program().
     const auto& binding = node.at("binding");
     const auto bf = field + ".binding";
-    r.object(binding, bf, {"kernel", "implementation", "numerical_contract"}, {"params_hex"});
+    r.validate_object_fields(binding, bf, {"kernel", "implementation", "numerical_contract"},
+                             {"params_hex"});
     n.binding.ref = r.ref(binding, bf);
-    n.binding.numerical_contract = r.string(binding.at("numerical_contract"), bf + ".numerical_contract");
+    n.binding.numerical_contract =
+        r.string(binding.at("numerical_contract"), bf + ".numerical_contract");
+
+    // Decode optional opaque parameter bytes: each pair of hex digits produces one byte.
+    // An empty string is valid and means no parameters; odd lengths or non-hex digits fail.
     if (binding.contains("params_hex")) {
       const auto& value = binding.at("params_hex");
       if (!value.is_string()) r.fail(ErrorCode::schema, bf + ".params_hex", "expected hex string");
@@ -261,20 +290,33 @@ PlanDocument parse_plan(std::string_view text, const std::string& source) {
         if (c >= 'A' && c <= 'F') return c - 'A' + 10;
         return -1;
       };
-      if (hex.size() % 2) r.fail(ErrorCode::schema, bf + ".params_hex", "expected pairs of hex digits");
+      if (hex.size() % 2)
+        r.fail(ErrorCode::schema, bf + ".params_hex", "expected pairs of hex digits");
       for (std::size_t k = 0; k < hex.size(); k += 2) {
-        if (digit(hex[k]) < 0 || digit(hex[k + 1]) < 0) r.fail(ErrorCode::schema, bf + ".params_hex", "invalid hex digit");
-        n.binding.params.push_back(static_cast<std::uint8_t>(digit(hex[k]) * 16 + digit(hex[k + 1])));
+        if (digit(hex[k]) < 0 || digit(hex[k + 1]) < 0)
+          r.fail(ErrorCode::schema, bf + ".params_hex", "invalid hex digit");
+        n.binding.params.push_back(
+            static_cast<std::uint8_t>(digit(hex[k]) * 16 + digit(hex[k + 1])));
       }
     }
     out.graph.nodes.push_back(std::move(n));
   }
+
+  // Preserve graph interface order: inputs are caller-supplied external slot IDs,
+  // and outputs are the slot IDs exposed as graph results.
   out.graph.inputs = r.ids(j.at("inputs"), "$.inputs");
   out.graph.outputs = r.ids(j.at("outputs"), "$.outputs");
+
+  // Keep an explicit schedule as node IDs; absence means automatic topological ordering.
+  // An explicitly empty schedule is different from an omitted schedule.
   if (j.contains("schedule")) {
-    r.object(j.at("schedule"), "$.schedule", {"order"});
+    r.validate_object_fields(j.at("schedule"), "$.schedule", {"order"});
     out.order = r.ids(j.at("schedule").at("order"), "$.schedule.order");
   }
+
+  // Validate IDs, references, producer rules, dependencies, and any explicit schedule.
+  // An automatic order is computed for validation but is not stored in out.order.
+  // Entry compatibility is checked later; this step does not load or execute kernels.
   const auto result = plan::prepare(out.graph, out.order);
   if (!result.ok()) detail::program_error(r, *result.error);
   return out;
@@ -283,4 +325,4 @@ PlanDocument parse_plan(std::string_view text, const std::string& source) {
 PlanDocument load_plan(const std::filesystem::path& path) {
   return parse_plan(detail::read_text(path), path.string());
 }
-} // namespace loom::io
+}  // namespace loom::io
